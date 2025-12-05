@@ -1,0 +1,2 @@
+gitlab_id,gitlab_iid,gitlab_title,gitlab_description,gitlab_state,gitlab_due_date,github_number,github_title,github_state,github_due_on,status,gitlab_source,gitlab_source_name,gitlab_web_url
+6142868,1,v1.0.1,"Milestone starting beginning of september, ending end of september",active,2025-09-30,,,,,not_created,group,my-group6804241,https://gitlab.com/groups/my-group6804241/-/milestones/1
