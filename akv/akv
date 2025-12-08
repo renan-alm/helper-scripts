@@ -1,0 +1,73 @@
+#!/usr/bin/python3
+import azure.core.exceptions
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+import click
+import os
+import sys
+import yaml
+import re
+import json
+from tabulate import tabulate
+
+main = click.Group()
+credential = DefaultAzureCredential()
+
+try:
+    with open("{}/.akv.conf".format(os.path.expanduser('~'))) as f:
+        vault_url = yaml.safe_load(f)['azure_keyvault_uri']
+except IOError:
+    if os.environ.get('AZURE_KEYVAULT_URI'):
+        vault_url = os.environ.get('AZURE_KEYVAULT_URI')
+    else:
+        print("Could not read {}/.akv.conf and AZURE_KEYVAULT_URI environment variable wasn't set")
+        sys.exit(1)
+    
+secret_client = SecretClient(vault_url=vault_url, credential=credential)
+
+@main.command('search')
+@click.argument('term', nargs=-1)
+@click.option('-o', 'output', type=click.Choice(['table','json']), default='table', required=False, show_default=True)
+def search(term, output):
+    try:
+        if type(term) is tuple:
+            term = ".*".join(term)
+
+        secrets = []
+        for secret in secret_client.list_properties_of_secrets():
+            if re.findall(term, secret.name):
+                secrets.append({"secret_name": secret.name, "secret_type": secret.content_type})
+    
+        if output == "table":
+            print(tabulate(secrets,headers="keys"))
+        if output == "json":
+            print(json.dumps({"results": secrets}))
+    except Exception as e:
+        print("Bad request or no connectivity, search failed")
+        print(e)
+    finally:
+        return
+
+@main.command('get')
+@click.argument('term')
+@click.option('-o', 'output', type=click.Choice(['table','json']), default='table',required=False, show_default=True)
+def get(term, output):
+    try:
+        secret = secret_client.get_secret(sys.argv[2])
+        secret_dict = {"secret": secret.name, "secret_value": secret.value}
+        if output == "table":
+            print(tabulate([secret_dict],headers="keys"))
+        if output == "json":
+            print(json.dumps(secret_dict))
+    except azure.core.exceptions.ResourceNotFoundError as e:
+        print("No secret by name {} was found".format(sys.argv[2]))
+    except azure.core.exceptions.HttpResponseError as e:
+        print("Invalid characters in secret name {}".format(sys.argv[2]))
+    
+    return 
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)
