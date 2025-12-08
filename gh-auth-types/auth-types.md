@@ -29,7 +29,7 @@ Also, the native `GITHUB_TOKEN` from GitHub Workflows will be shortly mentioned 
 | Classic PAT | `ghp_` | Indefinite | 30-90 days recommended | Broad | 5K/hr | ✅ Yes |
 | Installation Token | `ghs_` | 1 hour | N/A (renewed) | Fixed (App) | 15K/hr | ✅ Yes |
 | User Access Token | `ghu_` / `ghr_` | 8 hrs / 6 mo | Via refresh token | User and App | 5-15K/hr* | ❌ No |
-| GITHUB_TOKEN | `ghp_` | Job duration | N/A | Fixed (Repo) | 5K/hr | ✅ Yes |¨
+| GITHUB_TOKEN | `ghs_` | Job duration | N/A | Fixed (Repo) | 5K/hr | ✅ Yes |¨
 
 ** Headless means the authentication method can be used in automated/unattended scenarios without requiring user interaction or a graphical interface.
 
@@ -144,7 +144,7 @@ https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-githu
 
 ## GitHub Actions Native Token (GITHUB_TOKEN)
 
-This token is natively generated every time a GitHub Actions workflow runs. It uses the prefix `ghp_` and is scoped to the repository where the workflow is running. The token's lifetime is limited to the duration of the workflow run, meaning it expires once the job is complete. Its rate limit is 5000 requests per hour and its permissions are configurable via the workflow file, however the scope is limited to the repository where the workflow is running.
+This token is natively generated every time a GitHub Actions workflow runs. It uses the prefix `ghs_` and is scoped to the repository where the workflow is running. The token's lifetime is limited to the duration of the workflow run, meaning it expires once the job is complete. Its rate limit is 5000 requests per hour and its permissions are configurable via the workflow file, however the scope is limited to the repository where the workflow is running.
 
 Documentation in this topic has already been delivered in [github-app-token-or-github-actions-token.md](https://aptv.ghe.com/DevSecOps/GH-DSO/blob/main/docs/gh-app-token-vs-actions-token/github-app-token-or-github-actions-token.md).
 
