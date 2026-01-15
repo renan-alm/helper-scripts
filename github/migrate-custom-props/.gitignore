@@ -1,0 +1,8 @@
+venv
+**.env.local**
+.DS_Store
+python/.DS_Store
+_notes.iml
+misc/misc.iml
+scripts.iml
+**team-migration**
