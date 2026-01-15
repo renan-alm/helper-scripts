@@ -9,7 +9,7 @@ Usage:
     python migrate-custom-props.py --source-org SOURCE --target-org TARGET [--dry-run]
 
 Requirements:
-    - requests
+    - PyGithub
     - python-dotenv (optional, for .env file support)
 
 Configuration (in order of precedence):
@@ -21,16 +21,17 @@ Configuration (in order of precedence):
 import argparse
 import os
 import sys
-import json
 import warnings
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
-# Suppress urllib3 SSL warnings on some systems (must be before importing requests)
+# Suppress urllib3 SSL warnings on some systems
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL 1.1.1+")
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-import requests
+from github import Github
+from github.GithubException import GithubException
+from github.OrganizationCustomProperty import OrganizationCustomProperty
 
 try:
     from dotenv import load_dotenv
@@ -88,7 +89,20 @@ def get_token(token_arg: Optional[str], env_var: str = "GITHUB_TOKEN") -> str:
     return token
 
 
-def get_custom_properties(org: str, token: str) -> list[dict]:
+def get_github_client(token: str) -> Github:
+    """
+    Create a GitHub client instance.
+    
+    Args:
+        token: GitHub API token
+        
+    Returns:
+        Github client instance
+    """
+    return Github(token)
+
+
+def get_custom_properties(org: str, token: str) -> List[OrganizationCustomProperty]:
     """
     Fetch all custom properties from a GitHub organization.
     
@@ -97,37 +111,30 @@ def get_custom_properties(org: str, token: str) -> list[dict]:
         token: GitHub API token
         
     Returns:
-        List of custom property definitions
+        List of OrganizationCustomProperty objects
     """
-    url = f"https://api.github.com/orgs/{org}/properties/schema"
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
-        "X-GitHub-Api-Version": "2022-11-28"
-    }
-    
-    response = requests.get(url, headers=headers)
-    
-    if response.status_code == 404:
-        print(f"❌ Error: Organization '{org}' not found or no access", file=sys.stderr)
+    try:
+        g = get_github_client(token)
+        organization = g.get_organization(org)
+        properties = list(organization.get_custom_properties())
+        return properties
+    except GithubException as e:
+        if e.status == 404:
+            print(f"❌ Error: Organization '{org}' not found or no access", file=sys.stderr)
+        elif e.status == 403:
+            print(f"🔒 Error: Insufficient permissions to read custom properties from '{org}'", file=sys.stderr)
+        else:
+            print(f"❌ Error: Failed to fetch custom properties. Status: {e.status}", file=sys.stderr)
+            print(f"Response: {e.data}", file=sys.stderr)
         sys.exit(1)
-    elif response.status_code == 403:
-        print(f"🔒 Error: Insufficient permissions to read custom properties from '{org}'", file=sys.stderr)
-        sys.exit(1)
-    elif response.status_code != 200:
-        print(f"❌ Error: Failed to fetch custom properties. Status: {response.status_code}", file=sys.stderr)
-        print(f"Response: {response.text}", file=sys.stderr)
-        sys.exit(1)
-    
-    return response.json()
 
 
-def print_properties(properties: list[dict], org: str, dry_run: bool = False) -> None:
+def print_properties(properties: List[OrganizationCustomProperty], org: str, dry_run: bool = False) -> None:
     """
     Print custom properties in a readable format.
     
     Args:
-        properties: List of custom property definitions
+        properties: List of OrganizationCustomProperty objects
         org: Organization name (for display)
         dry_run: Whether this is a dry-run
     """
@@ -141,14 +148,14 @@ def print_properties(properties: list[dict], org: str, dry_run: bool = False) ->
         return
     
     for prop in properties:
-        print(f"\n🏷️  Property: {prop.get('property_name', 'N/A')}")
-        print(f"   ├─ Type: {prop.get('value_type', 'N/A')}")
-        print(f"   ├─ Required: {prop.get('required', False)}")
-        print(f"   ├─ Default Value: {prop.get('default_value', 'None')}")
-        print(f"   └─ Description: {prop.get('description', 'N/A')}")
+        print(f"\n🏷️  Property: {prop.property_name}")
+        print(f"   ├─ Type: {prop.value_type}")
+        print(f"   ├─ Required: {prop.required}")
+        print(f"   ├─ Default Value: {prop.default_value if prop.default_value else 'None'}")
+        print(f"   └─ Description: {prop.description if prop.description else 'N/A'}")
         
-        if prop.get('allowed_values'):
-            print(f"      Allowed Values: {', '.join(prop['allowed_values'])}")
+        if prop.allowed_values:
+            print(f"      Allowed Values: {', '.join(prop.allowed_values)}")
     
     print("\n" + "=" * 60)
     print(f"📊 Total: {len(properties)} custom property(ies)")
