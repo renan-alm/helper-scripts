@@ -21,9 +21,10 @@ Configuration (in order of precedence):
 import argparse
 import os
 import sys
+import time
 import warnings
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Tuple
 
 import requests
 
@@ -311,6 +312,344 @@ def create_enterprise_custom_properties(
         sys.exit(1)
 
 
+# =============================================================================
+# Rate Limit Handling
+# =============================================================================
+
+class RateLimitHandler:
+    """
+    Handles GitHub API rate limiting by tracking remaining requests
+    and waiting when limits are reached.
+    """
+    
+    def __init__(self, token: str):
+        self.token = token
+        self.remaining: int = 5000  # Default assumption
+        self.reset_time: int = 0
+        self.limit: int = 5000
+    
+    def update_from_headers(self, headers: Dict[str, str]) -> None:
+        """Update rate limit info from response headers."""
+        if 'X-RateLimit-Remaining' in headers:
+            self.remaining = int(headers['X-RateLimit-Remaining'])
+        if 'X-RateLimit-Reset' in headers:
+            self.reset_time = int(headers['X-RateLimit-Reset'])
+        if 'X-RateLimit-Limit' in headers:
+            self.limit = int(headers['X-RateLimit-Limit'])
+    
+    def update_from_github(self, github_client: Github) -> None:
+        """Update rate limit info from PyGithub client."""
+        rate_limit = github_client.get_rate_limit()
+        self.remaining = rate_limit.core.remaining
+        self.reset_time = int(rate_limit.core.reset.timestamp())
+        self.limit = rate_limit.core.limit
+    
+    def check_and_wait(self, min_remaining: int = 10) -> None:
+        """
+        Check if rate limit is approaching and wait if necessary.
+        
+        Args:
+            min_remaining: Minimum requests to keep before waiting
+        """
+        if self.remaining <= min_remaining:
+            wait_time = max(0, self.reset_time - int(time.time())) + 5  # Add 5s buffer
+            if wait_time > 0:
+                print(f"\n⏳ Rate limit reached ({self.remaining} remaining). Waiting {wait_time}s until reset...")
+                time.sleep(wait_time)
+                self.remaining = self.limit  # Assume reset happened
+    
+    def get_status(self) -> str:
+        """Get a status string for the rate limit."""
+        return f"{self.remaining}/{self.limit}"
+
+
+def make_api_request(
+    url: str,
+    token: str,
+    rate_handler: RateLimitHandler,
+    method: str = "GET",
+    payload: Optional[Dict] = None
+) -> Tuple[int, Any, Dict[str, str]]:
+    """
+    Make an API request with rate limit handling.
+    
+    Args:
+        url: API URL
+        token: GitHub token
+        rate_handler: RateLimitHandler instance
+        method: HTTP method
+        payload: Request payload for POST/PATCH
+        
+    Returns:
+        Tuple of (status_code, response_data, headers)
+    """
+    rate_handler.check_and_wait()
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    
+    if method == "GET":
+        response = requests.get(url, headers=headers)
+    elif method == "PATCH":
+        response = requests.patch(url, headers=headers, json=payload)
+    elif method == "POST":
+        response = requests.post(url, headers=headers, json=payload)
+    else:
+        raise ValueError(f"Unsupported HTTP method: {method}")
+    
+    rate_handler.update_from_headers(dict(response.headers))
+    
+    try:
+        data = response.json() if response.text else None
+    except ValueError:
+        data = response.text
+    
+    return response.status_code, data, dict(response.headers)
+
+
+# =============================================================================
+# Repository Property Sync Functions
+# =============================================================================
+
+class RepoPropertySync:
+    """
+    Handles synchronization of custom property values between repositories
+    in source and target organizations.
+    """
+    
+    def __init__(
+        self,
+        source_org: str,
+        target_org: str,
+        source_token: str,
+        target_token: str,
+        dry_run: bool = False
+    ):
+        self.source_org = source_org
+        self.target_org = target_org
+        self.source_token = source_token
+        self.target_token = target_token
+        self.dry_run = dry_run
+        
+        self.source_rate_handler = RateLimitHandler(source_token)
+        self.target_rate_handler = RateLimitHandler(target_token)
+        
+        # Stats
+        self.repos_processed = 0
+        self.repos_synced = 0
+        self.repos_skipped = 0
+        self.repos_not_found = 0
+    
+    def get_source_repos_with_properties(self) -> List[Dict[str, Any]]:
+        """
+        Fetch all repositories from source org with their custom property values.
+        
+        Returns:
+            List of dicts with repository_name and properties
+        """
+        print(f"\n⏳ Fetching repositories with property values from '{self.source_org}'...")
+        
+        all_repos = []
+        page = 1
+        per_page = 100
+        
+        while True:
+            self.source_rate_handler.check_and_wait()
+            
+            url = f"https://api.github.com/orgs/{self.source_org}/properties/values"
+            params = f"?per_page={per_page}&page={page}"
+            
+            status, data, headers = make_api_request(
+                url + params,
+                self.source_token,
+                self.source_rate_handler
+            )
+            
+            if status == 200:
+                if not data:
+                    break
+                all_repos.extend(data)
+                print(f"   📦 Fetched page {page} ({len(data)} repos, rate limit: {self.source_rate_handler.get_status()})")
+                if len(data) < per_page:
+                    break
+                page += 1
+            elif status == 404:
+                print(f"❌ Error: Organization '{self.source_org}' not found or no access", file=sys.stderr)
+                sys.exit(1)
+            elif status == 403:
+                print(f"🔒 Error: Insufficient permissions to read property values from '{self.source_org}'", file=sys.stderr)
+                sys.exit(1)
+            else:
+                print(f"❌ Error: Failed to fetch repositories. Status: {status}", file=sys.stderr)
+                print(f"   Response: {data}", file=sys.stderr)
+                sys.exit(1)
+        
+        print(f"   ✅ Total: {len(all_repos)} repositories with property values")
+        return all_repos
+    
+    def check_repo_exists_in_target(self, repo_name: str) -> bool:
+        """
+        Check if a repository exists in the target organization.
+        
+        Args:
+            repo_name: Repository name
+            
+        Returns:
+            True if exists, False otherwise
+        """
+        self.target_rate_handler.check_and_wait()
+        
+        url = f"https://api.github.com/repos/{self.target_org}/{repo_name}"
+        status, _, headers = make_api_request(url, self.target_token, self.target_rate_handler)
+        
+        return status == 200
+    
+    def update_repo_properties(
+        self,
+        repo_name: str,
+        properties: Dict[str, Any]
+    ) -> bool:
+        """
+        Update custom property values for a repository in target org.
+        
+        Args:
+            repo_name: Repository name
+            properties: Dict of property_name -> value
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if self.dry_run:
+            return True
+        
+        self.target_rate_handler.check_and_wait()
+        
+        url = f"https://api.github.com/repos/{self.target_org}/{repo_name}/properties/values"
+        payload = {
+            "properties": [
+                {"property_name": k, "value": v}
+                for k, v in properties.items()
+            ]
+        }
+        
+        status, data, headers = make_api_request(
+            url, self.target_token, self.target_rate_handler,
+            method="PATCH", payload=payload
+        )
+        
+        if status in [200, 204]:
+            return True
+        elif status == 404:
+            # Property might not exist in target
+            return False
+        elif status == 422:
+            print(f"      ⚠️  Invalid property value for {repo_name}: {data}")
+            return False
+        else:
+            print(f"      ❌ Failed to update {repo_name}: {status} - {data}")
+            return False
+    
+    def sync_repositories(self) -> Dict[str, int]:
+        """
+        Synchronize repository property values from source to target org.
+        
+        Returns:
+            Dict with sync statistics
+        """
+        source_repos = self.get_source_repos_with_properties()
+        
+        if not source_repos:
+            print("📭 No repositories with property values found in source org.")
+            return self._get_stats()
+        
+        mode = "🔍 [DRY-RUN] " if self.dry_run else ""
+        print(f"\n{mode}🔄 Syncing repository property values to '{self.target_org}'...")
+        print("=" * 60)
+        
+        total_repos = len(source_repos)
+        check_count = 0  # Track all repos checked (including skipped)
+        
+        for repo_data in source_repos:
+            repo_name = repo_data.get("repository_name")
+            properties_list = repo_data.get("properties", [])
+            
+            # Convert list of {property_name, value} to dict
+            properties = {
+                p["property_name"]: p["value"]
+                for p in properties_list
+                if p.get("value") is not None
+            }
+            
+            check_count += 1
+            
+            # Show progress every 25 repos (inline, overwriting previous)
+            if check_count % 25 == 0:
+                pct = int((check_count / total_repos) * 100)
+                print(f"\r   ⏳ Checking repos... {check_count}/{total_repos} ({pct}%) ", end="", flush=True)
+            
+            if not properties:
+                self.repos_skipped += 1
+                continue
+            
+            self.repos_processed += 1
+            
+            # Check if repo exists in target
+            if not self.check_repo_exists_in_target(repo_name):
+                self.repos_not_found += 1
+                if self.repos_not_found <= 5:  # Only show first 5
+                    print(f"\r   ⏭️  {repo_name} (not found in target)                    ")
+                elif self.repos_not_found == 6:
+                    print(f"\r   ... (hiding remaining 'not found' messages)              ")
+                continue
+            
+            # Clear the progress line before showing match
+            print("\r" + " " * 60 + "\r", end="")
+            
+            # Update properties
+            if self.dry_run:
+                print(f"   → {repo_name}: {len(properties)} property(ies)")
+                self.repos_synced += 1
+            else:
+                if self.update_repo_properties(repo_name, properties):
+                    print(f"   ✓ {repo_name}: {len(properties)} property(ies)")
+                    self.repos_synced += 1
+                else:
+                    print(f"   ✗ {repo_name}: sync failed")
+            
+            # Detailed progress indicator every 50 processed repos
+            if self.repos_processed % 50 == 0:
+                print(f"\n   📊 Progress: {check_count}/{total_repos} checked, {self.repos_synced} synced " +
+                      f"(rate limit: src={self.source_rate_handler.get_status()}, " +
+                      f"tgt={self.target_rate_handler.get_status()})\n")
+        
+        # Clear any remaining progress indicator
+        print("\r" + " " * 60 + "\r", end="")
+        
+        return self._get_stats()
+    
+    def _get_stats(self) -> Dict[str, int]:
+        """Get sync statistics."""
+        return {
+            "processed": self.repos_processed,
+            "synced": self.repos_synced,
+            "skipped": self.repos_skipped,
+            "not_found": self.repos_not_found,
+        }
+    
+    def print_summary(self) -> None:
+        """Print sync summary."""
+        mode = "🔍 [DRY-RUN] " if self.dry_run else ""
+        print(f"\n{mode}📊 Repository Sync Summary:")
+        print("=" * 60)
+        print(f"   📦 Repositories processed: {self.repos_processed}")
+        print(f"   ✅ Repositories synced: {self.repos_synced}")
+        print(f"   ⏭️  Repositories skipped (no properties): {self.repos_skipped}")
+        print(f"   ❓ Repositories not found in target: {self.repos_not_found}")
+
+
 def parse_args() -> argparse.Namespace:
     """
     Parse command line arguments.
@@ -336,6 +675,12 @@ Examples:
     
     # Include enterprise-level properties (requires enterprise admin access)
     python migrate-custom-props.py --source-org src-org --target-org tgt-org --target-enterprise my-enterprise
+    
+    # Sync repository property values (only repos that exist in both orgs)
+    python migrate-custom-props.py --source-org src-org --target-org tgt-org --sync-repos
+    
+    # Full migration: properties + repository values
+    python migrate-custom-props.py --source-org src-org --target-org tgt-org --sync-repos --target-enterprise my-enterprise
     
     # Use values from .env.local file (copy .env.example to .env.local)
     python migrate-custom-props.py --dry-run
@@ -389,6 +734,13 @@ Configuration (in order of precedence):
         help="Target enterprise slug for migrating enterprise-level properties"
     )
     
+    parser.add_argument(
+        "--sync-repos",
+        action="store_true",
+        default=False,
+        help="Sync repository property values from source to target org (only for repos that exist in both)"
+    )
+    
     args = parser.parse_args()
     
     # Validate required arguments
@@ -414,6 +766,7 @@ def main() -> None:
     if args.target_enterprise:
         print(f"🏢 Target Enterprise: {args.target_enterprise}")
     print(f"🔍 Dry Run: {args.dry_run}")
+    print(f"🔄 Sync Repos: {args.sync_repos}")
     print(f"🔑 Source PAT: {'provided' if args.source_pat else 'using GITHUB_TOKEN'}")
     print(f"🔑 Target PAT: {'provided' if args.target_pat else 'using GITHUB_TOKEN'}")
     
@@ -446,6 +799,17 @@ def main() -> None:
                     print(f"   → {prop.property_name} ({prop.value_type})")
             else:
                 print(f"\n📭 [DRY-RUN] No organization-level properties to create.")
+        
+        # Dry-run repo sync
+        if args.sync_repos:
+            repo_sync = RepoPropertySync(
+                args.source_org, args.target_org,
+                source_token, target_token,
+                dry_run=True
+            )
+            repo_sync.sync_repositories()
+            repo_sync.print_summary()
+        
         print("\n✅ [DRY-RUN] No changes were made.")
     else:
         org_properties = [p for p in properties if p.source_type != "enterprise"]
@@ -471,7 +835,19 @@ def main() -> None:
             org_count = create_custom_properties(org_properties, args.target_org, target_token)
             total_created += org_count
         
-        print(f"\n🎉 Migration complete! {total_created} property(ies) migrated.")
+        print(f"\n✅ Property schema migration complete! {total_created} property(ies) migrated.")
+        
+        # Sync repository property values
+        if args.sync_repos:
+            repo_sync = RepoPropertySync(
+                args.source_org, args.target_org,
+                source_token, target_token,
+                dry_run=False
+            )
+            repo_sync.sync_repositories()
+            repo_sync.print_summary()
+        
+        print(f"\n🎉 Migration complete!")
 
 
 if __name__ == "__main__":
