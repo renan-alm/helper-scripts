@@ -7,10 +7,11 @@ import os
 from pathlib import Path
 import re
 import sys
-from typing import Mapping, Optional, Sequence
-from urllib.parse import unquote, urljoin, urlparse
+from typing import Any, Mapping, Optional, Sequence
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 from dotenv import dotenv_values
+import requests
 
 
 DEFAULT_PROFILE_DIR = "~/.cache/github-packages-inheritance"
@@ -25,6 +26,7 @@ class Configuration:
     org: str
     profile_dir: Path
     dry_run: bool
+    github_token: str
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -99,6 +101,9 @@ def parse_configuration(
     org = arguments.org if arguments.org is not None else environment.get("ORG")
     if org is None or not org.strip():
         raise ValueError("Set ORG or pass --org with a GitHub organization slug.")
+    github_token = environment.get("GH_TOKEN")
+    if github_token is None or not github_token.strip():
+        raise ValueError("Set GH_TOKEN in .env or the shell environment.")
 
     profile_dir = (
         arguments.profile_dir
@@ -114,26 +119,62 @@ def parse_configuration(
         org=org.strip(),
         profile_dir=Path(profile_dir).expanduser().resolve(),
         dry_run=dry_run,
+        github_token=github_token.strip(),
     )
 
 
-def extract_package_urls(org: str, hrefs: Sequence[str]) -> list[str]:
-    """Return unique container-package URLs belonging to the organization."""
-    package_urls: list[str] = []
-    prefix = ["orgs", org.casefold(), "packages", "container"]
-    for href in hrefs:
-        parsed = urlparse(urljoin("https://github.com", href))
-        if parsed.netloc.casefold() != "github.com":
-            continue
-        segments = [unquote(part) for part in parsed.path.strip("/").split("/")]
-        if len(segments) != 5 or [part.casefold() for part in segments[:4]] != prefix:
-            continue
-        if not segments[4]:
-            continue
-        canonical_url = f"https://github.com/{'/'.join(segments)}"
-        if canonical_url not in package_urls:
-            package_urls.append(canonical_url)
-    return package_urls
+def list_container_packages(org: str, token: str) -> list[dict[str, Any]]:
+    """List all readable organization container packages through the REST API."""
+    url = f"https://api.github.com/orgs/{quote(org, safe='')}/packages"
+    params: Optional[dict[str, str | int]] = {
+        "package_type": "container",
+        "per_page": 100,
+    }
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    packages: list[dict[str, Any]] = []
+
+    while url:
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=30)
+            response.raise_for_status()
+        except requests.HTTPError as error:
+            status_code = error.response.status_code if error.response is not None else None
+            if status_code == 401:
+                raise RuntimeError("GH_TOKEN is invalid or lacks read:packages access.") from error
+            if status_code == 403:
+                raise RuntimeError(
+                    "GH_TOKEN cannot list packages in this organization; check token scopes and org access."
+                ) from error
+            raise RuntimeError(
+                f"GitHub package listing failed with HTTP {status_code}."
+            ) from error
+        except requests.RequestException as error:
+            raise RuntimeError("Could not connect to the GitHub Packages API.") from error
+
+        page_packages = response.json()
+        if not isinstance(page_packages, list):
+            raise RuntimeError("GitHub returned an unexpected package-list response.")
+        packages.extend(page_packages)
+        url = response.links.get("next", {}).get("url")
+        params = None
+
+    return packages
+
+
+def extract_package_repository(package: Mapping[str, Any], org: str) -> str:
+    """Return the linked organization repository name from package metadata."""
+    repository = package.get("repository")
+    full_name = repository.get("full_name") if isinstance(repository, dict) else None
+    if not isinstance(full_name, str) or "/" not in full_name:
+        raise ValueError("Package has no linked repository in its metadata.")
+    owner, repository_name = full_name.split("/", 1)
+    if owner.casefold() != org.casefold() or not repository_name:
+        raise ValueError(f"Linked repository {full_name!r} is not in {org}.")
+    return repository_name
 
 
 def extract_associated_repository(org: str, hrefs: Sequence[str]) -> str:
@@ -174,9 +215,28 @@ def _wait_for_sign_in(page, destination: str) -> None:
         raise RuntimeError("GitHub still requires sign-in; stopping without changes.")
 
 
-def _repository_row(page, org: str, repository: str):
-    """Find an access-table row for a repository, if one is present."""
-    rows = page.locator("tr")
+def _actions_access_panel(page):
+    """Locate the package's Manage Actions access section or fail closed."""
+    heading = page.get_by_role(
+        "heading", name=re.compile(r"manage actions access", re.IGNORECASE)
+    )
+    if heading.count() != 1:
+        raise RuntimeError("Could not uniquely identify the Manage Actions access section.")
+    panel = heading.locator(
+        "xpath=ancestor::*[self::section or self::div]["
+        ".//button[contains(translate(normalize-space(.), "
+        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'add repository')] "
+        "or .//a[contains(translate(normalize-space(.), "
+        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'add repository')]][1]"
+    )
+    if not panel.count():
+        raise RuntimeError("Could not find Add repository in Manage Actions access.")
+    return panel
+
+
+def _repository_row(panel, org: str, repository: str):
+    """Find a repository row only inside the Actions access section."""
+    rows = panel.locator("tr")
     for index in range(rows.count()):
         row = rows.nth(index)
         try:
@@ -186,6 +246,27 @@ def _repository_row(page, org: str, repository: str):
         if row_repository.casefold() == repository.casefold():
             return row
     return None
+
+
+def _actions_access_repositories(panel, org: str) -> list[str]:
+    """Read repository names from rows in the Actions access section only."""
+    repositories = []
+    rows = panel.locator("tr")
+    for index in range(rows.count()):
+        try:
+            repositories.append(
+                extract_associated_repository(org, _page_hrefs(rows.nth(index)))
+            )
+        except ValueError:
+            continue
+    return repositories
+
+
+def should_add_actions_access(repository: str, existing_repositories: Sequence[str]) -> bool:
+    """Return whether the linked repository is absent from Actions access."""
+    return repository.casefold() not in {
+        existing_repository.casefold() for existing_repository in existing_repositories
+    }
 
 
 def _select_admin_role(container) -> None:
@@ -209,37 +290,34 @@ def _select_admin_role(container) -> None:
     raise RuntimeError("Could not identify the repository role control in GitHub UI.")
 
 
-def _ensure_repository_admin(page, org: str, package_url: str, repository: str) -> None:
-    """Add a repository to package access or promote its existing role to Admin."""
+def _ensure_actions_repository_access(
+    page, org: str, package_url: str, repository: str, dry_run: bool
+) -> None:
+    """Add a missing Actions repository with Admin; leave existing access alone."""
     package_path = urlparse(package_url).path.rstrip("/")
     settings_url = f"https://github.com{package_path}/settings"
     page.goto(settings_url, wait_until="domcontentloaded")
     _wait_for_sign_in(page, settings_url)
 
-    row = _repository_row(page, org, repository)
-    if row is not None:
-        if re.search(r"\badmin\b", row.inner_text(), re.IGNORECASE):
-            print(f"Already Admin: {org}/{repository}")
-            return
-        _select_admin_role(row)
-        save_button = page.get_by_role("button", name=re.compile(r"^save$", re.IGNORECASE))
-        if save_button.count():
-            save_button.first.click()
-        updated_row = _repository_row(page, org, repository)
-        if updated_row is None or not re.search(
-            r"\badmin\b", updated_row.inner_text(), re.IGNORECASE
-        ):
-            raise RuntimeError(f"Could not verify Admin access for {org}/{repository}.")
-        print(f"Granted Admin: {org}/{repository}")
+    panel = _actions_access_panel(page)
+    existing_repositories = _actions_access_repositories(panel, org)
+    if not should_add_actions_access(repository, existing_repositories):
+        print(f"Already has Actions access; unchanged: {org}/{repository}")
         return
 
-    add_button = page.get_by_role(
+    if dry_run:
+        print(f"Would add {org}/{repository} to Actions access with Admin.")
+        return
+
+    add_button = panel.get_by_role(
         "button", name=re.compile(r"add repository", re.IGNORECASE)
     )
     if not add_button.count():
-        add_button = page.get_by_role("link", name=re.compile(r"add repository", re.IGNORECASE))
+        add_button = panel.get_by_role(
+            "link", name=re.compile(r"add repository", re.IGNORECASE)
+        )
     if not add_button.count():
-        raise RuntimeError("Could not find GitHub's Add repository control.")
+        raise RuntimeError("Could not find Add repository in Manage Actions access.")
     add_button.first.click()
 
     dialogs = page.get_by_role("dialog")
@@ -264,26 +342,25 @@ def _ensure_repository_admin(page, org: str, package_url: str, repository: str) 
         raise RuntimeError("Could not find the confirmation control for adding a repository.")
     submit.first.click()
 
-    verified_row = _repository_row(page, org, repository)
+    verified_row = _repository_row(panel, org, repository)
     if verified_row is None or not re.search(
         r"\badmin\b", verified_row.inner_text(), re.IGNORECASE
     ):
-        raise RuntimeError(f"Could not verify Admin access for {org}/{repository}.")
-    print(f"Granted Admin: {org}/{repository}")
+        raise RuntimeError(f"Could not verify Admin Actions access for {org}/{repository}.")
+    print(f"Added Actions access with Admin: {org}/{repository}")
 
 
 def process_package(
     page, configuration: Configuration, package_url: str, repository: str
 ) -> None:
-    """Report or apply the access change for one package."""
-    package_name = unquote(urlparse(package_url).path.rstrip("/").split("/")[-1])
-    if configuration.dry_run:
-        print(
-            f"Would grant Admin to {configuration.org}/{repository} "
-            f"for package {package_name}."
-        )
-        return
-    _ensure_repository_admin(page, configuration.org, package_url, repository)
+    """Inspect Actions access and add only a missing linked repository."""
+    _ensure_actions_repository_access(
+        page,
+        configuration.org,
+        package_url,
+        repository,
+        configuration.dry_run,
+    )
 
 
 def run(configuration: Configuration) -> int:
@@ -296,7 +373,11 @@ def run(configuration: Configuration) -> int:
             "'python -m playwright install chromium'."
         ) from error
 
-    list_url = PACKAGE_LIST_URL.format(org=configuration.org)
+    packages = list_container_packages(configuration.org, configuration.github_token)
+    if not packages:
+        print(f"No container packages found for {configuration.org}.")
+        return 0
+
     configuration.profile_dir.mkdir(parents=True, exist_ok=True)
     failures = 0
 
@@ -307,28 +388,21 @@ def run(configuration: Configuration) -> int:
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(list_url, wait_until="domcontentloaded")
-            _wait_for_sign_in(page, list_url)
-            package_urls = extract_package_urls(configuration.org, _page_hrefs(page))
-            if not package_urls:
-                print(f"No container packages found for {configuration.org}.")
-                return 0
-
-            for package_url in package_urls:
-                page.goto(package_url, wait_until="domcontentloaded")
-                package_name = unquote(urlparse(package_url).path.rstrip("/").split("/")[-1])
+            for package in packages:
+                package_name = str(package.get("name", "<unnamed>"))
                 try:
-                    repository = extract_associated_repository(
-                        configuration.org, _page_hrefs(page)
-                    )
+                    repository = extract_package_repository(package, configuration.org)
                 except ValueError as error:
                     failures += 1
                     print(f"Skipped {package_name}: {error}", file=sys.stderr)
                     continue
 
                 try:
+                    package_url = package.get("html_url")
+                    if not isinstance(package_url, str) or urlparse(package_url).netloc != "github.com":
+                        raise RuntimeError("Package metadata has no valid GitHub page URL.")
                     process_package(page, configuration, package_url, repository)
-                except RuntimeError as error:
+                except (RuntimeError, ValueError) as error:
                     failures += 1
                     print(f"Skipped {package_name}: {error}", file=sys.stderr)
 

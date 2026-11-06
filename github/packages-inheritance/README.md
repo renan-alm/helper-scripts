@@ -1,22 +1,41 @@
 # GitHub Packages Inheritance
 
-This utility uses GitHub's web UI to find an organization's Container Registry packages, identify each package's linked repository, and grant that repository the package's Admin role. This can help packages published with an organization-wide token be republished by workflows using the repository's standard `GITHUB_TOKEN`.
+This utility lists an organization's Container Registry packages through GitHub's authenticated REST API, then uses GitHub's web UI to inspect each package's **Manage Actions access**. If the package's linked repository is not already listed there, the utility can add it with the Admin role. This can help packages published with an organization-wide token be republished by workflows using the repository's standard `GITHUB_TOKEN`.
 
-The utility currently supports GitHub.com container packages. It uses a persistent local Chromium profile so you can sign in through GitHub's normal browser flow; it does not read or store passwords, personal access tokens, or workflow tokens.
+The utility currently supports GitHub.com container packages. `GH_TOKEN` authenticates package listing through the API. A separate persistent local Chromium profile is used for package settings; sign in through GitHub's normal browser flow if prompted. The token is read from `.env` or the shell environment and is never printed. It does not authenticate the browser session.
 
 ## Safety and behavior
 
-- `--dry-run` reports proposed changes without opening package settings.
+- The API listing follows pagination and returns packages readable by `GH_TOKEN`.
+- `--dry-run` inspects **Manage Actions access** and reports proposed additions without changing settings.
 - `--apply` explicitly enables changes and overrides `DRY_RUN`.
 - If neither is supplied, changes are applied unless `DRY_RUN` is set to a true value.
-- A package is skipped if its page does not expose exactly one organization repository link.
-- Existing Admin access is left unchanged. UI controls or results that cannot be recognized and verified are reported as failures rather than guessed.
-- Admin grants broad package access. Review the dry-run output and ensure the signed-in account is authorized before applying changes.
+- A package is skipped if it has no linked organization repository or the Actions-access section cannot be identified.
+- If that repository is already listed under **Manage Actions access**, it is left unchanged regardless of its current role. Only missing repositories are added, with Admin.
+- Admin grants broad package access. Review the dry-run output and ensure the signed-in browser account is authorized before applying changes.
+
+## Workflow
+
+```mermaid
+flowchart TD
+	A[Use GH_TOKEN to list all readable org container packages] --> B[Read each package's linked repository]
+	B --> C{One linked org repository?}
+	C -- No --> S[Report and skip package]
+	C -- Yes --> D[Open package settings in signed-in browser]
+	D --> E[Inspect Manage Actions access]
+	E --> F{Repository already listed?}
+	F -- Yes --> G[Leave unchanged, regardless of role]
+	F -- No --> H{Dry run?}
+	H -- Yes --> I[Report proposed Admin addition]
+	H -- No --> J[Add repository with Admin]
+	J --> K[Verify repository appears with Admin]
+```
 
 ## Requirements
 
 - Python 3.9 or later
-- A GitHub account with permission to manage the organization's packages
+- A GitHub personal access token (classic) with `read:packages` and access to the organization
+- A GitHub browser account with permission to manage package Actions access
 - Chromium installed for Playwright
 
 ## Setup
@@ -43,6 +62,7 @@ The script loads `.env` automatically from its own directory. The example sets `
 | Setting | CLI option | Environment variable | Default |
 | --- | --- | --- | --- |
 | Organization | `--org` | `ORG` | Required |
+| GitHub API token | None | `GH_TOKEN` | Required; classic PAT with `read:packages` |
 | Persistent browser profile directory | `--profile-dir` | `DIR` | `~/.cache/github-packages-inheritance` |
 | Non-mutating mode | `--dry-run` / `--apply` | `DRY_RUN` | Apply changes unless true |
 | Environment file | `--env-file` | N/A | `.env` beside the script |
@@ -75,7 +95,7 @@ Apply changes after reviewing the preview:
 python packages_inheritance.py --org my-org --apply
 ```
 
-The first run opens Chromium. Sign in to GitHub in that window if prompted; the profile is reused on later runs. Do not share the profile directory because it contains browser session data.
+The first run opens Chromium. Sign in to GitHub in that window if prompted; the profile is reused on later runs. `GH_TOKEN` authenticates the API listing only and cannot sign the browser in. Do not share the profile directory because it contains browser session data.
 
 ## Tests
 
