@@ -149,6 +149,13 @@ def list_container_packages(org: str, token: str) -> list[dict[str, Any]]:
                 raise RuntimeError(
                     "GH_TOKEN cannot list packages in this organization; check token scopes and org access."
                 ) from error
+            if status_code == 404:
+                raise RuntimeError(
+                    f"GitHub could not find or allow access to the package listing for "
+                    f"organization {org!r}. Verify ORG is the organization slug and "
+                    "GH_TOKEN has read:packages access to the organization, including "
+                    "SSO authorization if required."
+                ) from error
             raise RuntimeError(
                 f"GitHub package listing failed with HTTP {status_code}."
             ) from error

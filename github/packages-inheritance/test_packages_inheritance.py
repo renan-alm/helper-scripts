@@ -3,6 +3,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import requests
+
 from packages_inheritance import (
     Configuration,
     extract_associated_repository,
@@ -133,6 +135,18 @@ class PackageDiscoveryTests(unittest.TestCase):
         self.assertEqual([package["name"] for package in packages], ["first", "second"])
         self.assertEqual(get.call_args_list[0].kwargs["headers"]["Authorization"], "Bearer test-token")
         self.assertIsNone(get.call_args_list[1].kwargs["params"])
+
+    def test_package_listing_404_explains_org_and_token_access(self):
+        response = requests.Response()
+        response.status_code = 404
+        error = requests.HTTPError(response=response)
+
+        with patch("packages_inheritance.requests.get", side_effect=error):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "organization 'acme'.*ORG is the organization slug.*read:packages",
+            ):
+                list_container_packages("acme", "test-token")
 
     def test_finds_single_linked_repository(self):
         repository = extract_associated_repository(
