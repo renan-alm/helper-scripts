@@ -97,6 +97,33 @@ python packages_inheritance.py --org my-org --apply
 
 The first run opens Chromium. Sign in to GitHub in that window if prompted; the profile is reused on later runs. `GH_TOKEN` authenticates the API listing only and cannot sign the browser in. Do not share the profile directory because it contains browser session data.
 
+## Container image
+
+The `Publish packages-inheritance container` workflow builds and publishes the image to `ghcr.io/renan-alm/packages-inheritance` when changes under this project are pushed to `main`. It can also be started manually from the Actions tab. The default-branch image is tagged `latest`; each build also receives a commit SHA tag.
+
+The image includes Python dependencies and Chromium. It does not include `.env` or browser session data. On the other computer, copy `env.example` to `.env`, add your `GH_TOKEN`, and authenticate to GHCR if the package is private:
+
+```sh
+docker login ghcr.io -u renan-alm
+docker pull ghcr.io/renan-alm/packages-inheritance:latest
+```
+
+Run the container with your environment file, a persistent profile directory, and access to a graphical display. Example for a Linux host using X11:
+
+```sh
+docker run --rm -it \
+	--env-file .env \
+	--env DIR=/data/browser-profile \
+	--env DISPLAY="$DISPLAY" \
+	--volume "$PWD/browser-profile:/data/browser-profile" \
+	--volume /tmp/.X11-unix:/tmp/.X11-unix \
+	ghcr.io/renan-alm/packages-inheritance:latest --dry-run
+```
+
+The container needs a display because Chromium opens GitHub's UI for SSO and Actions-access management. On first run, sign in in that browser window; the mounted profile keeps the session for later runs. macOS and Windows require a host display bridge (for example, XQuartz on macOS); the Linux X11 command above is not sufficient for them. `GH_TOKEN` authenticates package listing only, not the browser session.
+
+Review the dry-run output, then replace `--dry-run` with `--apply` to make changes.
+
 ## Tests
 
 Run the local tests without connecting to GitHub:
