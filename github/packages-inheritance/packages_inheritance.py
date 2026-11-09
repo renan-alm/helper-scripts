@@ -309,11 +309,16 @@ def _ensure_actions_repository_access(
     panel = _actions_access_panel(page)
     existing_repositories = _actions_access_repositories(panel, org)
     if not should_add_actions_access(repository, existing_repositories):
-        print(f"Already has Actions access; unchanged: {org}/{repository}")
+        print(
+            f"Unchanged {settings_url}: {org}/{repository} already has Actions access "
+            "(existing role is not changed)."
+        )
         return
 
     if dry_run:
-        print(f"Would add {org}/{repository} to Actions access with Admin.")
+        print(
+            f"Would add {org}/{repository} to Actions access with Admin: {settings_url}"
+        )
         return
 
     add_button = panel.get_by_role(
@@ -354,7 +359,7 @@ def _ensure_actions_repository_access(
         r"\badmin\b", verified_row.inner_text(), re.IGNORECASE
     ):
         raise RuntimeError(f"Could not verify Admin Actions access for {org}/{repository}.")
-    print(f"Added Actions access with Admin: {org}/{repository}")
+    print(f"Added {org}/{repository} to Actions access with Admin: {settings_url}")
 
 
 def process_package(

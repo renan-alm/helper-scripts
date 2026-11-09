@@ -1,12 +1,15 @@
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import requests
 
 from packages_inheritance import (
     Configuration,
+    _ensure_actions_repository_access,
     extract_associated_repository,
     extract_package_repository,
     list_container_packages,
@@ -165,6 +168,39 @@ class PackageDiscoveryTests(unittest.TestCase):
 
 
 class PackageActionTests(unittest.TestCase):
+    def test_dry_run_reports_package_repository_and_role_without_changes(self):
+        page = MagicMock()
+        panel = MagicMock()
+        output = StringIO()
+        package_url = "https://github.com/orgs/acme/packages/container/frontend"
+
+        with patch("packages_inheritance._wait_for_sign_in"), patch(
+            "packages_inheritance._actions_access_panel", return_value=panel
+        ), patch(
+            "packages_inheritance._actions_access_repositories", return_value=[]
+        ), redirect_stdout(output):
+            _ensure_actions_repository_access(page, "acme", package_url, "api", True)
+
+        self.assertIn("Would add acme/api to Actions access with Admin", output.getvalue())
+        self.assertIn(f"{package_url}/settings", output.getvalue())
+        panel.get_by_role.assert_not_called()
+
+    def test_existing_access_reports_package_and_preserves_role(self):
+        page = MagicMock()
+        output = StringIO()
+        package_url = "https://github.com/orgs/acme/packages/container/frontend"
+
+        with patch("packages_inheritance._wait_for_sign_in"), patch(
+            "packages_inheritance._actions_access_panel"
+        ), patch(
+            "packages_inheritance._actions_access_repositories", return_value=["api"]
+        ), redirect_stdout(output):
+            _ensure_actions_repository_access(page, "acme", package_url, "api", True)
+
+        self.assertIn(f"Unchanged {package_url}/settings", output.getvalue())
+        self.assertIn("acme/api already has Actions access", output.getvalue())
+        self.assertIn("existing role is not changed", output.getvalue())
+
     def test_dry_run_inspects_actions_access_without_mutating(self):
         configuration = Configuration("acme", Path("/tmp/profile"), True, "test-token")
 

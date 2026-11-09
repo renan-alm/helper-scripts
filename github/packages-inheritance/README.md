@@ -77,6 +77,14 @@ Preview changes using the environment:
 python packages_inheritance.py --dry-run
 ```
 
+Each planned change identifies the repository, role, and package settings URL:
+
+```text
+Would add my-org/my-repo to Actions access with Admin: https://github.com/orgs/my-org/packages/container/my-package/settings
+```
+
+Packages with existing access are reported as unchanged, including when their current role is not Admin. Skipped packages and their reasons are printed to standard error. Dry run does not submit changes or verify that GitHub will accept them during apply; review both the preview and any skipped-package errors.
+
 Or provide settings directly:
 
 ```sh
