@@ -11,7 +11,9 @@ from packages_inheritance import (
     Configuration,
     _actions_access_panel,
     _ensure_actions_repository_access,
+    _has_admin_role,
     _prepare_browser_session,
+    _select_admin_role,
     extract_associated_repository,
     extract_package_repository,
     list_container_packages,
@@ -186,6 +188,161 @@ class ActionsPanelBrowserTests(unittest.TestCase):
         cls.browser.close()
         cls.playwright.stop()
 
+    def test_apply_selects_exact_checkbox_in_delayed_dialog(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <main><h2>Repository source</h2><a href="/SymriseAG/atlas-usecase-research">atlas-usecase-research</a>
+                <section><h2>Manage Actions access</h2>
+                <button onclick="setTimeout(() => document.querySelector('[role=dialog]').hidden=false, 150)">Add Repository</button>
+                <table id="access"></table></section></main>
+                <div role="dialog" hidden><input type="search">
+                <div><input id="exact" type="checkbox" aria-label="Select repository"><span>atlas-usecase-research</span></div>
+                <div><input id="similar" type="checkbox" aria-label="Select repository"><span>atlas-usecase-research-api</span></div>
+                <button id="submit" disabled onclick="addRepository()">Add repositories</button></div>
+                <script>
+                document.querySelector('#exact').onchange = event => {
+                  document.querySelector('#submit').disabled = !event.target.checked;
+                };
+                function addRepository() {
+                  document.querySelector('[role=dialog]').hidden = true;
+                  document.querySelector('#access').innerHTML =
+                    '<tr><td><a href="/SymriseAG/atlas-usecase-research">atlas-usecase-research</a></td>' +
+                    '<td><select><option>Read</option><option>Admin</option></select></td></tr>';
+                }
+                </script>
+            """)
+            with patch.object(page, "goto"), patch.object(page, "reload"), patch(
+                "packages_inheritance._wait_for_sign_in"
+            ), redirect_stdout(StringIO()):
+                _ensure_actions_repository_access(
+                    page, "SymriseAG", "openpom", "atlas-usecase-research", False
+                )
+            self.assertTrue(page.locator("#exact").is_checked())
+            self.assertFalse(page.locator("#similar").is_checked())
+            self.assertEqual(page.locator("#access select").input_value(), "Admin")
+        finally:
+            page.close()
+
+    def test_selects_admin_from_summary_role_control(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <div id="row"><details><summary>Role: Read</summary>
+                <button role="menuitem" onclick="document.querySelector('summary').textContent='Role: Admin'">
+                Admin<span> Can manage this package.</span></button></details></div>
+            """)
+            row = page.locator("#row")
+            _select_admin_role(row, page)
+            self.assertTrue(_has_admin_role(row))
+        finally:
+            page.close()
+
+    def test_apply_sets_admin_on_non_table_row_with_descriptive_menu(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <main><section><div><h2>Manage Actions access</h2>
+                <button onclick="document.querySelector('[role=dialog]').hidden=false">Add Repository</button>
+                </div><div id="access"></div></section><h2>Manage Codespaces access</h2></main>
+                <div role="dialog" hidden><input type="search">
+                <label><input type="checkbox">harbour-app-myembassy</label>
+                <button onclick="addRepository()">Add repositories</button></div>
+                <div role="menu" id="roles" hidden>
+                <button role="menuitem" onclick="setAdmin()">Admin<span> Can upload, download, and manage this package.</span></button>
+                </div><script>
+                function addRepository() {
+                  document.querySelector('[role=dialog]').hidden = true;
+                  setTimeout(() => document.querySelector('#access').innerHTML =
+                    '<div><input type="checkbox"><a href="/SymriseAG/harbour-app-myembassy">harbour-app-myembassy</a>' +
+                                        '<button onclick="showRoles()">Role: Read</button></div>', 100);
+                }
+                                function showRoles() { document.querySelector('#roles').hidden = false; }
+                function setAdmin() {
+                  document.querySelector('#access button').textContent = 'Role: Admin';
+                  document.querySelector('#roles').hidden = true;
+                }
+                </script>
+            """)
+            output = StringIO()
+            with patch.object(page, "goto"), patch.object(page, "reload") as reload_page, patch(
+                "packages_inheritance._wait_for_sign_in"
+            ), redirect_stdout(output):
+                _ensure_actions_repository_access(
+                    page, "SymriseAG", "myembassy-strapi", "harbour-app-myembassy", False
+                )
+            self.assertTrue(page.get_by_role("button", name="Role: Admin").is_visible())
+            self.assertIn("Added SymriseAG/harbour-app-myembassy", output.getvalue())
+            reload_page.assert_called_once_with(wait_until="domcontentloaded")
+        finally:
+            page.close()
+
+    def test_apply_reports_failure_when_admin_does_not_persist(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <section><h2>Manage Actions access</h2>
+                <button onclick="document.querySelector('[role=dialog]').hidden=false">Add Repository</button>
+                <table id="access"></table></section>
+                <div role="dialog" hidden><input type="text">
+                <label><input type="checkbox">api</label>
+                <button onclick="document.querySelector('#access').innerHTML =
+                '<tr><td><a href=/acme/api>api</a></td><td><select><option>Read</option><option>Admin</option></select></td></tr>'">Add repositories</button></div>
+            """)
+            def reset_role(**kwargs):
+                page.locator("#access select").select_option(label="Read")
+
+            with patch.object(page, "goto"), patch.object(page, "reload", side_effect=reset_role), patch(
+                "packages_inheritance._wait_for_sign_in"
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Admin role was not present after reloading"):
+                    _ensure_actions_repository_access(page, "acme", "image", "api", False)
+        finally:
+            page.close()
+
+    def test_existing_access_in_non_table_list_skips_without_clicking(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <main>
+                <h2>Repository source</h2><a href="/acme/source">source</a>
+                <section><div><h2>Manage Actions access</h2>
+                <button onclick="this.dataset.clicked = 'yes'">Add Repository</button></div>
+                <div><input type="checkbox"><a href="/acme/other-repo">other-repo</a>
+                <button>Role: Admin</button></div></section>
+                <h2>Other settings</h2><a href="/acme/unrelated">unrelated</a>
+                </main>
+            """)
+            output = StringIO()
+            with patch.object(page, "goto"), patch.object(page, "reload"), patch(
+                "packages_inheritance._wait_for_sign_in"
+            ), redirect_stdout(output):
+                _ensure_actions_repository_access(page, "acme", "image", "source", False)
+            self.assertIn("Actions access is already configured for acme/other-repo", output.getvalue())
+            self.assertNotIn("acme/source", output.getvalue())
+            self.assertNotIn("acme/unrelated", output.getvalue())
+            self.assertIsNone(page.get_by_role("button", name="Add Repository").get_attribute("data-clicked"))
+        finally:
+            page.close()
+
+    def test_repository_source_does_not_count_as_actions_access(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <main><h2>Repository source</h2><a href="/acme/source">source</a>
+                <section><h2>Manage Actions access</h2>
+                <button>Add Repository</button></section>
+                <h2>Other settings</h2><a href="/acme/other">other</a></main>
+            """)
+            output = StringIO()
+            with patch.object(page, "goto"), patch(
+                "packages_inheritance._wait_for_sign_in"
+            ), redirect_stdout(output):
+                _ensure_actions_repository_access(page, "acme", "image", "source", True)
+            self.assertIn("Would add acme/source to Actions access with Admin", output.getvalue())
+        finally:
+            page.close()
+
     def test_finds_summary_button_in_main_container(self):
         page = self.browser.new_page()
         try:
@@ -219,7 +376,7 @@ class ActionsPanelBrowserTests(unittest.TestCase):
                 "<details><summary>Add Repository</summary></details></section>"
             )
             with patch.object(page, "goto"), patch("packages_inheritance._wait_for_sign_in"):
-                with self.assertRaisesRegex(RuntimeError, "repository search field"):
+                with self.assertRaisesRegex(RuntimeError, "Add repository dialog"):
                     _ensure_actions_repository_access(page, "acme", "image", "api", False)
             self.assertIsNotNone(page.locator("details").get_attribute("open"))
         finally:
@@ -254,7 +411,7 @@ class ActionsPanelBrowserTests(unittest.TestCase):
                 </script>
             """)
             output = StringIO()
-            with patch.object(page, "goto"), patch(
+            with patch.object(page, "goto"), patch.object(page, "reload"), patch(
                 "packages_inheritance._wait_for_sign_in"
             ), redirect_stdout(output):
                 _ensure_actions_repository_access(
@@ -390,8 +547,8 @@ class PackageActionTests(unittest.TestCase):
             _ensure_actions_repository_access(page, "acme", "frontend", "api", True)
 
         self.assertIn(f"Unchanged {package_url}/settings", output.getvalue())
-        self.assertIn("acme/api already has Actions access", output.getvalue())
-        self.assertIn("existing role is not changed", output.getvalue())
+        self.assertIn("Actions access is already configured for acme/api", output.getvalue())
+        self.assertIn("existing access is not changed", output.getvalue())
 
     def test_dry_run_inspects_actions_access_without_mutating(self):
         configuration = Configuration("acme", Path("/tmp/profile"), True, "test-token")

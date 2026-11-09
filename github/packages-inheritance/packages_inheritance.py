@@ -268,28 +268,54 @@ def _actions_access_panel(page):
     return panel
 
 
-def _repository_row(panel, org: str, repository: str):
-    """Find a repository row only inside the Actions access section."""
-    rows = panel.locator("tr")
-    for index in range(rows.count()):
-        row = rows.nth(index)
-        try:
-            row_repository = extract_associated_repository(org, _page_hrefs(row))
-        except ValueError:
-            continue
-        if row_repository.casefold() == repository.casefold():
-            return row
-    return None
+def _repository_row(page, org: str, repository: str):
+    """Find the added repository's role control in the Actions access section."""
+    path = f"/{quote(org, safe='')}/{quote(repository, safe='')}".lower()
+    lowercase_href = "translate(@href, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
+    heading = page.get_by_role(
+        "heading", name=re.compile(r"manage actions access", re.IGNORECASE)
+    )
+    link = heading.locator(
+        "xpath=following::a[@href][preceding::*[self::h1 or self::h2 or self::h3 "
+        "or self::h4 or self::h5 or self::h6][1][contains("
+        "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+        "'abcdefghijklmnopqrstuvwxyz'), 'manage actions access')]]"
+        f"[substring({lowercase_href}, string-length(@href) - {len(path) - 1}) = '{path}' "
+        f"or substring({lowercase_href}, string-length(@href) - {len(path)}) = '{path}/']"
+    )
+    link.first.wait_for(state="visible", timeout=10000)
+    if link.count() != 1:
+        raise RuntimeError(f"Could not uniquely identify the Actions access link for {org}/{repository}.")
+    row = link.locator(
+        "xpath=ancestor::*[self::tr or self::li or "
+        "(self::div and .//*[self::button or self::summary or self::select or @role='button']["
+        "contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+        "'abcdefghijklmnopqrstuvwxyz'), 'role') or self::select])][1]"
+    )
+    if row.count() != 1:
+        raise RuntimeError(f"Could not identify the Actions access row for {org}/{repository}.")
+    return row
 
 
-def _actions_access_repositories(panel, org: str) -> list[str]:
-    """Read repository names from rows in the Actions access section only."""
+def _actions_access_repositories(page, org: str) -> list[str]:
+    """Read visible repository links after the Actions heading and before the next heading."""
     repositories = []
-    rows = panel.locator("tr")
-    for index in range(rows.count()):
+    heading = page.get_by_role(
+        "heading", name=re.compile(r"manage actions access", re.IGNORECASE)
+    )
+    links = heading.locator(
+        "xpath=following::a[@href][preceding::*[self::h1 or self::h2 or self::h3 "
+        "or self::h4 or self::h5 or self::h6][1][contains("
+        "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+        "'abcdefghijklmnopqrstuvwxyz'), 'manage actions access')]]"
+    )
+    for index in range(links.count()):
+        link = links.nth(index)
+        if not link.is_visible():
+            continue
         try:
             repositories.append(
-                extract_associated_repository(org, _page_hrefs(rows.nth(index)))
+                extract_associated_repository(org, [link.get_attribute("href")])
             )
         except ValueError:
             continue
@@ -315,24 +341,41 @@ def _select_admin_role(container, page) -> None:
             raise RuntimeError("The repository role did not change to Admin.")
         return
 
-    role_buttons = container.get_by_role(
-        "button", name=re.compile(r"^(read|write|admin)$", re.IGNORECASE)
+    role_name = re.compile(r"^(?:role:\s*)?(read|write|admin)\b", re.IGNORECASE)
+    role_buttons = container.get_by_role("button", name=role_name).or_(
+        container.locator("summary").filter(has_text=role_name)
     )
     if role_buttons.count():
+        if re.search(r"\badmin\b", role_buttons.first.inner_text(), re.IGNORECASE):
+            return
         role_buttons.first.click()
-        admin_option = page.get_by_role("menuitem", name="Admin", exact=True).or_(
-            page.get_by_role("option", name="Admin", exact=True)
+        admin_name = re.compile(r"^admin\b", re.IGNORECASE)
+        admin_option = page.get_by_role("menuitem", name=admin_name).or_(
+            page.get_by_role("menuitemradio", name=admin_name)
+        ).or_(page.get_by_role("option", name=admin_name)).or_(
+            page.get_by_role("button", name=admin_name)
         )
         try:
             admin_option.first.wait_for(state="visible", timeout=10000)
             admin_option.first.click()
-            container.get_by_role(
-                "button", name=re.compile(r"^admin$", re.IGNORECASE)
+            admin_role = re.compile(r"^(?:role:\s*)?admin\b", re.IGNORECASE)
+            container.get_by_role("button", name=admin_role).or_(
+                container.locator("summary").filter(has_text=admin_role)
             ).first.wait_for(state="visible", timeout=10000)
             return
         except PlaywrightTimeoutError as error:
             raise RuntimeError("Could not select or verify the Admin role.") from error
     raise RuntimeError("Could not identify the repository role control in GitHub UI.")
+
+
+def _has_admin_role(container) -> bool:
+    selects = container.get_by_role("combobox")
+    if selects.count():
+        return selects.first.locator("option:checked").inner_text().strip().casefold() == "admin"
+    admin_role = re.compile(r"^(?:role:\s*)?admin\b", re.IGNORECASE)
+    return bool(container.get_by_role("button", name=admin_role).or_(
+        container.locator("summary").filter(has_text=admin_role)
+    ).count())
 
 
 def _ensure_actions_repository_access(
@@ -347,11 +390,12 @@ def _ensure_actions_repository_access(
     _wait_for_sign_in(page, settings_url)
 
     panel = _actions_access_panel(page)
-    existing_repositories = _actions_access_repositories(panel, org)
-    if not should_add_actions_access(repository, existing_repositories):
+    existing_repositories = _actions_access_repositories(page, org)
+    if existing_repositories:
         print(
-            f"Unchanged {settings_url}: {org}/{repository} already has Actions access "
-            "(existing role is not changed)."
+            f"Unchanged {settings_url}: Actions access is already configured for "
+            f"{', '.join(f'{org}/{name}' for name in existing_repositories)} "
+            "(existing access is not changed)."
         )
         return
 
@@ -376,10 +420,14 @@ def _ensure_actions_repository_access(
         raise RuntimeError("Could not find Add repository in Manage Actions access.")
     add_button.first.click()
 
-    dialogs = page.get_by_role("dialog")
-    dialog = dialogs.first if dialogs.count() else page
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    dialog = page.get_by_role("dialog").first
+    try:
+        dialog.wait_for(state="visible", timeout=10000)
+    except PlaywrightTimeoutError as error:
+        raise RuntimeError("Could not find the Add repository dialog.") from error
 
     search_fields = dialog.locator('input:not([type]), input[type="text"], input[type="search"]')
     try:
@@ -407,15 +455,19 @@ def _ensure_actions_repository_access(
         ).locator('input[type="checkbox"]')
     if checkbox.count() != 1:
         raise RuntimeError(f"Could not uniquely identify the checkbox for {org}/{repository}.")
-    checkbox.check()
+    try:
+        checkbox.check(timeout=10000)
+    except PlaywrightError as error:
+        raise RuntimeError(f"Could not select the checkbox for {org}/{repository}.") from error
 
     submit = dialog.get_by_role(
         "button", name=re.compile(r"^add repositor(?:y|ies)$", re.IGNORECASE)
     )
-    if not submit.count():
-        raise RuntimeError("Could not find the confirmation control for adding a repository.")
     try:
-        submit.first.click()
+        submit.first.wait_for(state="visible", timeout=10000)
+        if submit.count() != 1:
+            raise RuntimeError("Could not uniquely identify the Add repositories button.")
+        submit.first.click(timeout=10000)
     except PlaywrightError as error:
         raise RuntimeError(
             f"Could not confirm submission for {org}/{repository}; "
@@ -423,17 +475,14 @@ def _ensure_actions_repository_access(
         ) from error
 
     try:
-        repository_path = f"/{quote(org, safe='')}/{quote(repository, safe='')}"
-        row = panel.locator("tr").filter(
-            has=page.locator(
-                f'a[href$="{repository_path}" i], a[href$="{repository_path}/" i]'
-            )
-        )
-        row.first.wait_for(state="visible", timeout=10000)
-        verified_row = _repository_row(panel, org, repository)
-        if verified_row is None:
-            raise RuntimeError("Could not identify the added repository row.")
+        verified_row = _repository_row(page, org, repository)
         _select_admin_role(verified_row, page)
+        page.wait_for_load_state("networkidle", timeout=10000)
+        page.reload(wait_until="domcontentloaded")
+        _wait_for_sign_in(page, settings_url)
+        verified_row = _repository_row(page, org, repository)
+        if not _has_admin_role(verified_row):
+            raise RuntimeError("Admin role was not present after reloading the package settings.")
     except (RuntimeError, PlaywrightError) as error:
         raise RuntimeError(
             f"Add was submitted for {org}/{repository}, but Admin access could not be "
