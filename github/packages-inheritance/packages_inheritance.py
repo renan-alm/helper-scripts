@@ -211,6 +211,20 @@ def _page_hrefs(page) -> list[str]:
     )
 
 
+def _prepare_browser_session(page) -> None:
+    """Let the user sign in and complete any organization SSO before processing."""
+    page.goto("https://github.com/login", wait_until="domcontentloaded")
+    print(
+        "Sign in to GitHub in the opened browser and complete any organization SSO. "
+        "If already signed in, confirm you are using the correct account.",
+        file=sys.stderr,
+    )
+    try:
+        input("Press Enter when the browser session is ready... ")
+    except EOFError as error:
+        raise RuntimeError("An interactive terminal is required for browser sign-in.") from error
+
+
 def _wait_for_sign_in(page, destination: str) -> None:
     """Pause for interactive sign-in if GitHub redirected to its login page."""
     if "/login" not in urlparse(page.url).path:
@@ -400,6 +414,7 @@ def run(configuration: Configuration) -> int:
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()
+            _prepare_browser_session(page)
             for package in packages:
                 package_name = str(package.get("name", "<unnamed>"))
                 try:

@@ -146,6 +146,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+/github/packages-inheritance/browser-profile/
 
 # Spyder project settings
 .spyderproject

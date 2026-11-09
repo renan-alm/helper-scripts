@@ -103,7 +103,7 @@ Apply changes after reviewing the preview:
 python packages_inheritance.py --org my-org --apply
 ```
 
-The first run opens Chromium. Sign in to GitHub in that window if prompted; the profile is reused on later runs. `GH_TOKEN` authenticates the API listing only and cannot sign the browser in. Do not share the profile directory because it contains browser session data.
+Before processing packages, the script opens GitHub's sign-in page in Chromium and waits for you to press Enter in the terminal. Sign in in that window, complete any organization SSO, or confirm the existing session is using the correct account before continuing. The profile is reused on later runs. `GH_TOKEN` authenticates the API listing only and cannot sign the browser in. Do not share the profile directory because it contains browser session data.
 
 ## Container image
 
@@ -128,7 +128,7 @@ docker run --rm -it \
 	ghcr.io/renan-alm/packages-inheritance:latest --dry-run
 ```
 
-The container needs a display because Chromium opens GitHub's UI for SSO and Actions-access management. On first run, sign in in that browser window; the mounted profile keeps the session for later runs. macOS and Windows require a host display bridge (for example, XQuartz on macOS); the Linux X11 command above is not sufficient for them. `GH_TOKEN` authenticates package listing only, not the browser session.
+The container needs a display because Chromium opens GitHub's UI for SSO and Actions-access management. Sign in in that browser window, then press Enter in the terminal to continue; the mounted profile keeps the session for later runs. Keep `-it` so the script can receive your confirmation. macOS and Windows require a host display bridge (for example, XQuartz on macOS); the Linux X11 command above is not sufficient for them. `GH_TOKEN` authenticates package listing only, not the browser session.
 
 Review the dry-run output, then replace `--dry-run` with `--apply` to make changes.
 

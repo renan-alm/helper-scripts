@@ -10,6 +10,7 @@ import requests
 from packages_inheritance import (
     Configuration,
     _ensure_actions_repository_access,
+    _prepare_browser_session,
     extract_associated_repository,
     extract_package_repository,
     list_container_packages,
@@ -168,6 +169,21 @@ class PackageDiscoveryTests(unittest.TestCase):
 
 
 class PackageActionTests(unittest.TestCase):
+    def test_browser_session_opens_login_and_waits_for_user(self):
+        page = MagicMock()
+        with patch("builtins.input", return_value="") as prompt:
+            _prepare_browser_session(page)
+
+        page.goto.assert_called_once_with(
+            "https://github.com/login", wait_until="domcontentloaded"
+        )
+        prompt.assert_called_once()
+
+    def test_browser_session_requires_interactive_input(self):
+        with patch("builtins.input", side_effect=EOFError):
+            with self.assertRaisesRegex(RuntimeError, "interactive terminal"):
+                _prepare_browser_session(MagicMock())
+
     def test_dry_run_reports_package_repository_and_role_without_changes(self):
         page = MagicMock()
         panel = MagicMock()
