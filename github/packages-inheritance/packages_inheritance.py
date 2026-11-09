@@ -270,6 +270,8 @@ def _actions_access_panel(page):
 
 def _repository_row(page, org: str, repository: str):
     """Find the added repository's role control in the Actions access section."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", repository):
+        raise RuntimeError("Invalid repository name in package metadata.")
     path = f"/{quote(org, safe='')}/{quote(repository, safe='')}".lower()
     lowercase_href = "translate(@href, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
     heading = page.get_by_role(
@@ -281,7 +283,9 @@ def _repository_row(page, org: str, repository: str):
         "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
         "'abcdefghijklmnopqrstuvwxyz'), 'manage actions access')]]"
         f"[substring({lowercase_href}, string-length(@href) - {len(path) - 1}) = '{path}' "
-        f"or substring({lowercase_href}, string-length(@href) - {len(path)}) = '{path}/']"
+        f"or substring({lowercase_href}, string-length(@href) - {len(path)}) = '{path}/' "
+        "or translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+        f"'abcdefghijklmnopqrstuvwxyz') = '{repository.lower()}']"
     )
     link.first.wait_for(state="visible", timeout=10000)
     if link.count() != 1:
@@ -318,7 +322,9 @@ def _actions_access_repositories(page, org: str) -> list[str]:
                 extract_associated_repository(org, [link.get_attribute("href")])
             )
         except ValueError:
-            continue
+            name = link.inner_text().strip()
+            if re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                repositories.append(name)
     return repositories
 
 
@@ -354,10 +360,16 @@ def _select_admin_role(container, page) -> None:
             page.get_by_role("menuitemradio", name=admin_name)
         ).or_(page.get_by_role("option", name=admin_name)).or_(
             page.get_by_role("button", name=admin_name)
-        )
+        ).locator("visible=true")
+        admin_text = page.get_by_text("Admin", exact=True).locator("visible=true")
         try:
-            admin_option.first.wait_for(state="visible", timeout=10000)
-            admin_option.first.click()
+            admin_option.or_(admin_text).first.wait_for(state="visible", timeout=10000)
+            if admin_option.count() == 1:
+                admin_option.first.click()
+            elif admin_option.count() == 0 and admin_text.count() == 1:
+                admin_text.first.click()
+            else:
+                raise RuntimeError("Could not uniquely identify the Admin role option.")
             admin_role = re.compile(r"^(?:role:\s*)?admin\b", re.IGNORECASE)
             container.get_by_role("button", name=admin_role).or_(
                 container.locator("summary").filter(has_text=admin_role)
@@ -437,6 +449,30 @@ def _ensure_actions_repository_access(
 
     panel = _actions_access_panel(page)
     existing_repositories = _actions_access_repositories(page, org)
+    if not should_add_actions_access(repository, existing_repositories):
+        from playwright.sync_api import Error as PlaywrightError
+
+        try:
+            row = _repository_row(page, org, repository)
+            if _has_admin_role(row):
+                print(f"Unchanged {settings_url}: {org}/{repository} already has Admin Actions access.")
+                return
+            if dry_run:
+                print(f"Would change {org}/{repository} Actions access to Admin: {settings_url}")
+                return
+            _select_admin_role(row, page)
+            page.wait_for_load_state("networkidle", timeout=10000)
+            page.reload(wait_until="domcontentloaded")
+            _wait_for_sign_in(page, settings_url)
+            if not _has_admin_role(_repository_row(page, org, repository)):
+                raise RuntimeError("Admin role was not present after reloading the package settings.")
+        except (RuntimeError, PlaywrightError) as error:
+            raise RuntimeError(
+                f"Could not confirm Admin Actions access for {org}/{repository}; "
+                f"check the package settings: {error}"
+            ) from error
+        print(f"Changed {org}/{repository} Actions access to Admin: {settings_url}")
+        return
     if existing_repositories:
         print(
             f"Unchanged {settings_url}: Actions access is already configured for "

@@ -189,6 +189,57 @@ class ActionsPanelBrowserTests(unittest.TestCase):
         cls.browser.close()
         cls.playwright.stop()
 
+    def test_existing_read_role_is_changed_to_admin(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <section><div><h2>Manage Actions access</h2><button>Add Repository</button></div>
+                <div><a href="/orgs/SymriseAG/packages/access/123">kl-petfood-rnd-pipeline</a>
+                <button onclick="document.querySelector('[role=menu]').hidden=false">Role: Read</button></div></section>
+                <div role="menu" hidden><button role="menuitem" onclick="document.querySelector('section div:nth-child(2) button').textContent='Role: Admin'">Admin</button></div>
+            """)
+            output = StringIO()
+            with patch.object(page, "goto"), patch.object(page, "reload"), patch(
+                "packages_inheritance._wait_for_sign_in"
+            ), redirect_stdout(output):
+                _ensure_actions_repository_access(page, "SymriseAG", "image", "kl-petfood-rnd-pipeline", False)
+            self.assertTrue(page.get_by_role("button", name="Role: Admin").is_visible())
+            self.assertIn("Changed SymriseAG/kl-petfood-rnd-pipeline Actions access to Admin", output.getvalue())
+        finally:
+            page.close()
+
+    def test_existing_read_role_is_only_reported_in_dry_run(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <section><h2>Manage Actions access</h2><button>Add Repository</button>
+                <div><a href="/orgs/acme/packages/access/123">api</a>
+                <button onclick="this.textContent='clicked'">Role: Read</button></div></section>
+            """)
+            output = StringIO()
+            with patch.object(page, "goto"), patch("packages_inheritance._wait_for_sign_in"), redirect_stdout(output):
+                _ensure_actions_repository_access(page, "acme", "image", "api", True)
+            self.assertIn("Would change acme/api Actions access to Admin", output.getvalue())
+            self.assertTrue(page.get_by_role("button", name="Role: Read").is_visible())
+        finally:
+            page.close()
+
+    def test_existing_admin_role_is_left_unchanged(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <section><h2>Manage Actions access</h2><button>Add Repository</button>
+                <div><a href="/orgs/acme/packages/access/123">api</a>
+                <button onclick="this.textContent='clicked'">Role: Admin</button></div></section>
+            """)
+            output = StringIO()
+            with patch.object(page, "goto"), patch("packages_inheritance._wait_for_sign_in"), redirect_stdout(output):
+                _ensure_actions_repository_access(page, "acme", "image", "api", False)
+            self.assertIn("acme/api already has Admin Actions access", output.getvalue())
+            self.assertTrue(page.get_by_role("button", name="Role: Admin").is_visible())
+        finally:
+            page.close()
+
     def test_ambiguous_repository_checkboxes_are_not_selected(self):
         page = self.browser.new_page()
         try:
@@ -268,6 +319,21 @@ class ActionsPanelBrowserTests(unittest.TestCase):
                 <div id="row"><details><summary>Role: Read</summary>
                 <button role="menuitem" onclick="document.querySelector('summary').textContent='Role: Admin'">
                 Admin<span> Can manage this package.</span></button></details></div>
+            """)
+            row = page.locator("#row")
+            _select_admin_role(row, page)
+            self.assertTrue(_has_admin_role(row))
+        finally:
+            page.close()
+
+    def test_selects_admin_from_menu_without_menuitem_role(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <div id="row"><details><summary>Role: Read</summary>
+                <div onclick="document.querySelector('summary').textContent='Role: Admin'">
+                <span>Admin</span><p>Can upload, download, and manage this package.</p></div>
+                </details></div>
             """)
             row = page.locator("#row")
             _select_admin_role(row, page)
@@ -579,12 +645,12 @@ class PackageActionTests(unittest.TestCase):
         with patch("packages_inheritance._wait_for_sign_in"), patch(
             "packages_inheritance._actions_access_panel"
         ), patch(
-            "packages_inheritance._actions_access_repositories", return_value=["api"]
+            "packages_inheritance._actions_access_repositories", return_value=["other"]
         ), redirect_stdout(output):
             _ensure_actions_repository_access(page, "acme", "frontend", "api", True)
 
         self.assertIn(f"Unchanged {package_url}/settings", output.getvalue())
-        self.assertIn("Actions access is already configured for acme/api", output.getvalue())
+        self.assertIn("Actions access is already configured for acme/other", output.getvalue())
         self.assertIn("existing access is not changed", output.getvalue())
 
     def test_dry_run_inspects_actions_access_without_mutating(self):

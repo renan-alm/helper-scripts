@@ -1,6 +1,6 @@
 # GitHub Packages Inheritance
 
-This utility lists an organization's Container Registry packages through GitHub's authenticated REST API, then uses GitHub's web UI to inspect each package's **Manage Actions access**. If no repository is already listed there, the utility can add the package's linked repository with the Admin role. This can help packages published with an organization-wide token be republished by workflows using the repository's standard `GITHUB_TOKEN`.
+This utility lists an organization's Container Registry packages through GitHub's authenticated REST API, then uses GitHub's web UI to inspect each package's **Manage Actions access**. It sets the linked repository's existing access to Admin, or adds it with Admin when no repository is listed. This can help packages published with an organization-wide token be republished by workflows using the repository's standard `GITHUB_TOKEN`.
 
 The utility currently supports GitHub.com container packages. `GH_TOKEN` authenticates package listing through the API. A separate persistent local Chromium profile is used for package settings; sign in through GitHub's normal browser flow if prompted. The token is read from `.env` or the shell environment and is never printed. It does not authenticate the browser session.
 
@@ -11,8 +11,8 @@ The utility currently supports GitHub.com container packages. `GH_TOKEN` authent
 - `--apply` explicitly enables changes and overrides `DRY_RUN`.
 - If neither is supplied, changes are applied unless `DRY_RUN` is set to a true value.
 - A package is skipped if it has no linked organization repository or the Actions-access section cannot be identified.
-- If any organization repository is already listed under **Manage Actions access**, the package is left unchanged regardless of its current role. Only packages without existing repository access are considered for an Admin addition.
-- Adding a repository and setting Admin are separate UI steps. The script reloads the package settings to verify Admin. If adding succeeds but Admin cannot be confirmed, it reports a partial change; inspect and correct the role manually. A later run will not change an existing repository's role.
+- If the linked repository is already listed, the script changes its role to Admin if needed. If only other repositories are listed, the package is left unchanged.
+- Adding a repository and setting Admin are separate UI steps. The script reloads the package settings to verify Admin. If adding succeeds but Admin cannot be confirmed, it reports a partial change; inspect the role or rerun to retry the linked repository.
 - Admin grants broad package access. Review the dry-run output and ensure the signed-in browser account is authorized before applying changes.
 
 ## Workflow
@@ -24,9 +24,11 @@ flowchart TD
 	C -- No --> S[Report and skip package]
 	C -- Yes --> D[Open package settings in signed-in browser]
 	D --> E[Inspect Manage Actions access]
-	E --> F{Any repository already listed?}
-	F -- Yes --> G[Leave package unchanged, regardless of role]
-	F -- No --> H{Dry run?}
+	E --> F{Linked repository listed?}
+	F -- Yes --> G[Set its role to Admin if needed]
+	F -- No --> L{Other repositories listed?}
+	L -- Yes --> M[Leave package unchanged]
+	L -- No --> H{Dry run?}
 	H -- Yes --> I[Report proposed Admin addition]
 	H -- No --> J[Add repository with Admin]
 	J --> K[Verify repository appears with Admin]
@@ -84,7 +86,7 @@ Each planned change identifies the repository, role, and package settings URL:
 Would add my-org/my-repo to Actions access with Admin: https://github.com/orgs/my-org/packages/container/my-package/settings
 ```
 
-Packages with any existing organization repository access are reported as unchanged, including when the listed repository differs from the linked repository or its role is not Admin. Skipped packages and their reasons are printed to standard error. Dry run does not submit changes or verify that GitHub will accept them during apply; review both the preview and any skipped-package errors.
+The preview reports role changes for linked repositories already listed with Read or Write access. Packages with only other repositories listed, and linked repositories already set to Admin, are reported as unchanged. Skipped packages and their reasons are printed to standard error. Dry run does not submit changes or verify that GitHub will accept them during apply; review both the preview and any skipped-package errors.
 
 Or provide settings directly:
 
