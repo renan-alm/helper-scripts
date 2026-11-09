@@ -1,5 +1,5 @@
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,6 +16,7 @@ from packages_inheritance import (
     list_container_packages,
     parse_configuration,
     process_package,
+    run,
     should_add_actions_access,
 )
 
@@ -169,6 +170,63 @@ class PackageDiscoveryTests(unittest.TestCase):
 
 
 class PackageActionTests(unittest.TestCase):
+    def test_run_uses_package_name_not_repository_scoped_html_url(self):
+        packages = [
+            {
+                "name": "myembassy-strapi",
+                "html_url": "https://github.com/SymriseAG/harbour-app-myembassy/pkgs/container/myembassy-strapi",
+                "repository": {"full_name": "SymriseAG/harbour-app-myembassy"},
+            },
+            {"repository": {"full_name": "SymriseAG/harbour-app-myembassy"}},
+        ]
+        playwright = MagicMock()
+        context = playwright.chromium.launch_persistent_context.return_value
+        page = context.pages[0]
+        errors = StringIO()
+        with TemporaryDirectory() as profile_dir, patch(
+            "packages_inheritance.list_container_packages", return_value=packages
+        ), patch("playwright.sync_api.sync_playwright") as sync_playwright, patch(
+            "packages_inheritance._prepare_browser_session"
+        ), patch("packages_inheritance.process_package") as process, redirect_stderr(errors):
+            sync_playwright.return_value.__enter__.return_value = playwright
+            configuration = Configuration("SymriseAG", Path(profile_dir), True, "token")
+            result = run(configuration)
+
+        self.assertEqual(result, 1)
+        process.assert_called_once_with(page, configuration, "myembassy-strapi", "harbour-app-myembassy")
+        self.assertIn("Skipped <unnamed>", errors.getvalue())
+        context.close.assert_called_once()
+
+    def test_settings_url_uses_organization_and_package_name(self):
+        page = MagicMock()
+        with patch("packages_inheritance._wait_for_sign_in"), patch(
+            "packages_inheritance._actions_access_panel"
+        ), patch(
+            "packages_inheritance._actions_access_repositories", return_value=[]
+        ), redirect_stdout(StringIO()):
+            _ensure_actions_repository_access(
+                page, "SymriseAG", "myembassy-strapi", "harbour-app-myembassy", True
+            )
+
+        page.goto.assert_called_once_with(
+            "https://github.com/orgs/SymriseAG/packages/container/myembassy-strapi/settings",
+            wait_until="domcontentloaded",
+        )
+
+    def test_settings_url_encodes_package_name(self):
+        page = MagicMock()
+        with patch("packages_inheritance._wait_for_sign_in"), patch(
+            "packages_inheritance._actions_access_panel"
+        ), patch(
+            "packages_inheritance._actions_access_repositories", return_value=[]
+        ), redirect_stdout(StringIO()):
+            _ensure_actions_repository_access(page, "acme", "group/image", "api", True)
+
+        page.goto.assert_called_once_with(
+            "https://github.com/orgs/acme/packages/container/group%2Fimage/settings",
+            wait_until="domcontentloaded",
+        )
+
     def test_browser_session_opens_login_and_waits_for_user(self):
         page = MagicMock()
         with patch("builtins.input", return_value="") as prompt:
@@ -195,7 +253,7 @@ class PackageActionTests(unittest.TestCase):
         ), patch(
             "packages_inheritance._actions_access_repositories", return_value=[]
         ), redirect_stdout(output):
-            _ensure_actions_repository_access(page, "acme", package_url, "api", True)
+            _ensure_actions_repository_access(page, "acme", "frontend", "api", True)
 
         self.assertIn("Would add acme/api to Actions access with Admin", output.getvalue())
         self.assertIn(f"{package_url}/settings", output.getvalue())
@@ -211,7 +269,7 @@ class PackageActionTests(unittest.TestCase):
         ), patch(
             "packages_inheritance._actions_access_repositories", return_value=["api"]
         ), redirect_stdout(output):
-            _ensure_actions_repository_access(page, "acme", package_url, "api", True)
+            _ensure_actions_repository_access(page, "acme", "frontend", "api", True)
 
         self.assertIn(f"Unchanged {package_url}/settings", output.getvalue())
         self.assertIn("acme/api already has Actions access", output.getvalue())
@@ -224,14 +282,14 @@ class PackageActionTests(unittest.TestCase):
             process_package(
                 None,
                 configuration,
-                "https://github.com/orgs/acme/packages/container/api",
+                "api",
                 "api",
             )
 
         ensure_access.assert_called_once_with(
             None,
             "acme",
-            "https://github.com/orgs/acme/packages/container/api",
+            "api",
             "api",
             True,
         )
@@ -243,14 +301,14 @@ class PackageActionTests(unittest.TestCase):
             process_package(
                 None,
                 configuration,
-                "https://github.com/orgs/acme/packages/container/api",
+                "api",
                 "api",
             )
 
         ensure_access.assert_called_once_with(
             None,
             "acme",
-            "https://github.com/orgs/acme/packages/container/api",
+            "api",
             "api",
             False,
         )

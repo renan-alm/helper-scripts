@@ -312,11 +312,13 @@ def _select_admin_role(container) -> None:
 
 
 def _ensure_actions_repository_access(
-    page, org: str, package_url: str, repository: str, dry_run: bool
+    page, org: str, package_name: str, repository: str, dry_run: bool
 ) -> None:
     """Add a missing Actions repository with Admin; leave existing access alone."""
-    package_path = urlparse(package_url).path.rstrip("/")
-    settings_url = f"https://github.com{package_path}/settings"
+    settings_url = (
+        f"https://github.com/orgs/{quote(org, safe='')}/packages/container/"
+        f"{quote(package_name, safe='')}/settings"
+    )
     page.goto(settings_url, wait_until="domcontentloaded")
     _wait_for_sign_in(page, settings_url)
 
@@ -377,13 +379,13 @@ def _ensure_actions_repository_access(
 
 
 def process_package(
-    page, configuration: Configuration, package_url: str, repository: str
+    page, configuration: Configuration, package_name: str, repository: str
 ) -> None:
     """Inspect Actions access and add only a missing linked repository."""
     _ensure_actions_repository_access(
         page,
         configuration.org,
-        package_url,
+        package_name,
         repository,
         configuration.dry_run,
     )
@@ -416,7 +418,11 @@ def run(configuration: Configuration) -> int:
             page = context.pages[0] if context.pages else context.new_page()
             _prepare_browser_session(page)
             for package in packages:
-                package_name = str(package.get("name", "<unnamed>"))
+                package_name = package.get("name")
+                if not isinstance(package_name, str) or not package_name.strip():
+                    failures += 1
+                    print("Skipped <unnamed>: Package metadata has no valid name.", file=sys.stderr)
+                    continue
                 try:
                     repository = extract_package_repository(package, configuration.org)
                 except ValueError as error:
@@ -425,10 +431,7 @@ def run(configuration: Configuration) -> int:
                     continue
 
                 try:
-                    package_url = package.get("html_url")
-                    if not isinstance(package_url, str) or urlparse(package_url).netloc != "github.com":
-                        raise RuntimeError("Package metadata has no valid GitHub page URL.")
-                    process_package(page, configuration, package_url, repository)
+                    process_package(page, configuration, package_name, repository)
                 except (RuntimeError, ValueError) as error:
                     failures += 1
                     print(f"Skipped {package_name}: {error}", file=sys.stderr)
