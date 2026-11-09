@@ -12,6 +12,7 @@ The utility currently supports GitHub.com container packages. `GH_TOKEN` authent
 - If neither is supplied, changes are applied unless `DRY_RUN` is set to a true value.
 - A package is skipped if it has no linked organization repository or the Actions-access section cannot be identified.
 - If that repository is already listed under **Manage Actions access**, it is left unchanged regardless of its current role. Only missing repositories are added, with Admin.
+- Adding a repository and setting Admin are separate UI steps. If adding succeeds but Admin cannot be confirmed, the script reports a partial change; inspect and correct the role manually. A later run will not change an existing repository's role.
 - Admin grants broad package access. Review the dry-run output and ensure the signed-in browser account is authorized before applying changes.
 
 ## Workflow

@@ -225,6 +225,67 @@ class ActionsPanelBrowserTests(unittest.TestCase):
         finally:
             page.close()
 
+    def test_apply_waits_selects_checkbox_and_sets_admin_after_add(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <section><h2>Manage Actions access</h2>
+                <button onclick="document.querySelector('[role=dialog]').hidden = false">Add Repository</button>
+                <table id="access"></table></section>
+                <div role="dialog" hidden><input type="search" id="search">
+                <div id="results"></div>
+                <button id="submit" disabled>Add repositories</button></div>
+                <script>
+                document.querySelector('#search').addEventListener('input', event => {
+                  if (event.target.value === 'gcp-app-symsearch') setTimeout(() => {
+                    document.querySelector('#results').innerHTML =
+                      '<label><input type="checkbox">gcp-app-symsearch</label>';
+                    document.querySelector('#results input').onchange = event => {
+                      document.querySelector('#submit').disabled = !event.target.checked;
+                    };
+                  }, 150);
+                });
+                document.querySelector('#submit').onclick = () => {
+                  document.querySelector('[role=dialog]').hidden = true;
+                  setTimeout(() => document.querySelector('#access').innerHTML =
+                    '<tr><td><a href="/SymriseAG/gcp-app-symsearch">gcp-app-symsearch</a></td>' +
+                    '<td><select><option>Read</option><option>Admin</option></select></td></tr>', 150);
+                };
+                </script>
+            """)
+            output = StringIO()
+            with patch.object(page, "goto"), patch(
+                "packages_inheritance._wait_for_sign_in"
+            ), redirect_stdout(output):
+                _ensure_actions_repository_access(
+                    page, "SymriseAG", "symsearch-backend", "gcp-app-symsearch", False
+                )
+            self.assertEqual(page.locator("#search").input_value(), "gcp-app-symsearch")
+            self.assertEqual(page.locator("#access select").input_value(), "Admin")
+            self.assertIn("Added SymriseAG/gcp-app-symsearch", output.getvalue())
+        finally:
+            page.close()
+
+    def test_apply_reports_partial_change_when_role_control_is_missing(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <section><h2>Manage Actions access</h2>
+                <button onclick="document.querySelector('[role=dialog]').hidden = false">Add Repository</button>
+                <table id="access"></table></section>
+                <div role="dialog" hidden><input type="text">
+                <label><input type="checkbox">api</label>
+                <button onclick="document.querySelector('#access').innerHTML =
+                '<tr><td><a href=/acme/api>api</a></td><td>Read</td></tr>'">Add repositories</button></div>
+            """)
+            with patch.object(page, "goto"), patch("packages_inheritance._wait_for_sign_in"):
+                with self.assertRaisesRegex(RuntimeError, "Add was submitted.*Admin access could not be confirmed"):
+                    _ensure_actions_repository_access(page, "acme", "image", "api", False)
+            self.assertTrue(page.get_by_role("checkbox", name="api").is_checked())
+            self.assertEqual(page.locator("#access tr").count(), 1)
+        finally:
+            page.close()
+
 
 class PackageActionTests(unittest.TestCase):
     def test_run_uses_package_name_not_repository_scoped_html_url(self):

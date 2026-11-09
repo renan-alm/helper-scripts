@@ -303,11 +303,16 @@ def should_add_actions_access(repository: str, existing_repositories: Sequence[s
     }
 
 
-def _select_admin_role(container) -> None:
+def _select_admin_role(container, page) -> None:
     """Choose Admin using a visible select or menu control."""
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
     selects = container.get_by_role("combobox")
     if selects.count():
         selects.first.select_option(label="Admin")
+        selected = selects.first.locator("option:checked")
+        if selected.inner_text().strip().casefold() != "admin":
+            raise RuntimeError("The repository role did not change to Admin.")
         return
 
     role_buttons = container.get_by_role(
@@ -315,12 +320,18 @@ def _select_admin_role(container) -> None:
     )
     if role_buttons.count():
         role_buttons.first.click()
-        admin_option = container.get_by_role("menuitem", name="Admin", exact=True)
-        if not admin_option.count():
-            admin_option = container.get_by_role("option", name="Admin", exact=True)
-        if admin_option.count():
+        admin_option = page.get_by_role("menuitem", name="Admin", exact=True).or_(
+            page.get_by_role("option", name="Admin", exact=True)
+        )
+        try:
+            admin_option.first.wait_for(state="visible", timeout=10000)
             admin_option.first.click()
+            container.get_by_role(
+                "button", name=re.compile(r"^admin$", re.IGNORECASE)
+            ).first.wait_for(state="visible", timeout=10000)
             return
+        except PlaywrightTimeoutError as error:
+            raise RuntimeError("Could not select or verify the Admin role.") from error
     raise RuntimeError("Could not identify the repository role control in GitHub UI.")
 
 
@@ -367,31 +378,67 @@ def _ensure_actions_repository_access(
 
     dialogs = page.get_by_role("dialog")
     dialog = dialogs.first if dialogs.count() else page
-    search_fields = dialog.locator('input[type="text"], input[type="search"]')
-    if not search_fields.count():
-        raise RuntimeError("Could not find the repository search field.")
-    search_fields.first.fill(f"{org}/{repository}")
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-    repository_option = dialog.get_by_text(f"{org}/{repository}", exact=True)
-    if not repository_option.count():
-        repository_option = dialog.get_by_text(repository, exact=True)
-    if not repository_option.count():
-        raise RuntimeError(f"GitHub did not offer repository {org}/{repository}.")
-    repository_option.first.click()
-    _select_admin_role(dialog)
+    search_fields = dialog.locator('input:not([type]), input[type="text"], input[type="search"]')
+    try:
+        search_fields.first.wait_for(state="visible", timeout=10000)
+    except PlaywrightTimeoutError as error:
+        raise RuntimeError("Could not find the repository search field.") from error
+    search_fields.first.fill(repository)
+
+    repository_label = dialog.get_by_text(
+        re.compile(rf"^(?:{re.escape(org)}[/])?{re.escape(repository)}$", re.IGNORECASE)
+    )
+    try:
+        repository_label.first.wait_for(state="visible", timeout=10000)
+    except PlaywrightTimeoutError as error:
+        raise RuntimeError(f"GitHub did not offer repository {org}/{repository} within 10 seconds.") from error
+    checkbox = dialog.get_by_role(
+        "checkbox", name=re.compile(
+            rf"^(?:{re.escape(org)}[/])?{re.escape(repository)}$", re.IGNORECASE
+        )
+    )
+    if not checkbox.count():
+        checkbox = repository_label.first.locator(
+            "xpath=ancestor::*[self::label or self::li or self::div]"
+            "[.//input[@type='checkbox']][1]"
+        ).locator('input[type="checkbox"]')
+    if checkbox.count() != 1:
+        raise RuntimeError(f"Could not uniquely identify the checkbox for {org}/{repository}.")
+    checkbox.check()
 
     submit = dialog.get_by_role(
-        "button", name=re.compile(r"^add repository$", re.IGNORECASE)
+        "button", name=re.compile(r"^add repositor(?:y|ies)$", re.IGNORECASE)
     )
     if not submit.count():
         raise RuntimeError("Could not find the confirmation control for adding a repository.")
-    submit.first.click()
+    try:
+        submit.first.click()
+    except PlaywrightError as error:
+        raise RuntimeError(
+            f"Could not confirm submission for {org}/{repository}; "
+            "check the package settings before retrying."
+        ) from error
 
-    verified_row = _repository_row(panel, org, repository)
-    if verified_row is None or not re.search(
-        r"\badmin\b", verified_row.inner_text(), re.IGNORECASE
-    ):
-        raise RuntimeError(f"Could not verify Admin Actions access for {org}/{repository}.")
+    try:
+        repository_path = f"/{quote(org, safe='')}/{quote(repository, safe='')}"
+        row = panel.locator("tr").filter(
+            has=page.locator(
+                f'a[href$="{repository_path}" i], a[href$="{repository_path}/" i]'
+            )
+        )
+        row.first.wait_for(state="visible", timeout=10000)
+        verified_row = _repository_row(panel, org, repository)
+        if verified_row is None:
+            raise RuntimeError("Could not identify the added repository row.")
+        _select_admin_role(verified_row, page)
+    except (RuntimeError, PlaywrightError) as error:
+        raise RuntimeError(
+            f"Add was submitted for {org}/{repository}, but Admin access could not be "
+            f"confirmed; check and correct the package settings manually: {error}"
+        ) from error
     print(f"Added {org}/{repository} to Actions access with Admin: {settings_url}")
 
 
