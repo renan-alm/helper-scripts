@@ -238,20 +238,33 @@ def _wait_for_sign_in(page, destination: str) -> None:
 
 def _actions_access_panel(page):
     """Locate the package's Manage Actions access section or fail closed."""
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
     heading = page.get_by_role(
         "heading", name=re.compile(r"manage actions access", re.IGNORECASE)
     )
+    add_control = page.get_by_role(
+        "button", name=re.compile(r"add repository", re.IGNORECASE)
+    ).or_(page.get_by_role("link", name=re.compile(r"add repository", re.IGNORECASE))).or_(
+        page.locator("summary").filter(has_text=re.compile(r"add repository", re.IGNORECASE))
+    )
+    try:
+        heading.first.wait_for(state="visible", timeout=10000)
+        add_control.first.wait_for(state="visible", timeout=10000)
+    except PlaywrightTimeoutError as error:
+        raise RuntimeError(
+            "Could not find a visible Manage Actions access heading and Add repository control."
+        ) from error
     if heading.count() != 1:
         raise RuntimeError("Could not uniquely identify the Manage Actions access section.")
     panel = heading.locator(
-        "xpath=ancestor::*[self::section or self::div]["
-        ".//button[contains(translate(normalize-space(.), "
-        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'add repository')] "
-        "or .//a[contains(translate(normalize-space(.), "
+        "xpath=ancestor::*[self::section or self::div or self::main or self::article]["
+        ".//*[self::button or self::a or self::summary or @role='button']["
+        "contains(translate(normalize-space(.), "
         "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'add repository')]][1]"
     )
     if not panel.count():
-        raise RuntimeError("Could not find Add repository in Manage Actions access.")
+        raise RuntimeError("Could not associate Add repository with the Manage Actions access section.")
     return panel
 
 
@@ -343,6 +356,10 @@ def _ensure_actions_repository_access(
     if not add_button.count():
         add_button = panel.get_by_role(
             "link", name=re.compile(r"add repository", re.IGNORECASE)
+        )
+    if not add_button.count():
+        add_button = panel.locator("summary").filter(
+            has_text=re.compile(r"add repository", re.IGNORECASE)
         )
     if not add_button.count():
         raise RuntimeError("Could not find Add repository in Manage Actions access.")

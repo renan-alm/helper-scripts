@@ -9,6 +9,7 @@ import requests
 
 from packages_inheritance import (
     Configuration,
+    _actions_access_panel,
     _ensure_actions_repository_access,
     _prepare_browser_session,
     extract_associated_repository,
@@ -167,6 +168,62 @@ class PackageDiscoveryTests(unittest.TestCase):
             extract_associated_repository(
                 "acme", ["/acme/api", "/acme/worker"]
             )
+
+
+class ActionsPanelBrowserTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from playwright.sync_api import sync_playwright
+
+        cls.playwright = sync_playwright().start()
+        if not Path(cls.playwright.chromium.executable_path).exists():
+            cls.playwright.stop()
+            raise unittest.SkipTest("Playwright Chromium is not installed")
+        cls.browser = cls.playwright.chromium.launch(headless=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close()
+        cls.playwright.stop()
+
+    def test_finds_summary_button_in_main_container(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content(
+                "<main><h2>Manage Actions access</h2>"
+                "<details><summary>Add Repository</summary></details></main>"
+            )
+            panel = _actions_access_panel(page)
+            self.assertEqual(panel.locator("summary").inner_text(), "Add Repository")
+        finally:
+            page.close()
+
+    def test_waits_for_delayed_add_button(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content(
+                "<section><h2>Manage Actions access</h2></section>"
+                "<script>setTimeout(() => document.querySelector('section').insertAdjacentHTML("
+                "'beforeend', '<button>Add Repository</button>'), 100)</script>"
+            )
+            panel = _actions_access_panel(page)
+            self.assertEqual(panel.get_by_role("button", name="Add Repository").count(), 1)
+        finally:
+            page.close()
+
+    def test_apply_clicks_summary_add_control(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content(
+                "<section><h2>Manage Actions access</h2>"
+                "<details><summary>Add Repository</summary></details></section>"
+            )
+            with patch.object(page, "goto"), patch("packages_inheritance._wait_for_sign_in"):
+                with self.assertRaisesRegex(RuntimeError, "repository search field"):
+                    _ensure_actions_repository_access(page, "acme", "image", "api", False)
+            self.assertIsNotNone(page.locator("details").get_attribute("open"))
+        finally:
+            page.close()
 
 
 class PackageActionTests(unittest.TestCase):
