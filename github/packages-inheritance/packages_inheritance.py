@@ -378,6 +378,52 @@ def _has_admin_role(container) -> bool:
     ).count())
 
 
+def _repository_checkbox(dialog, org: str, repository: str):
+        """Find one checkbox whose associated visible row names the exact repository."""
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        handle = dialog.element_handle()
+        try:
+                result = dialog.page.wait_for_function(
+                        """({dialog, names}) => {
+                            const checkboxes = [...dialog.querySelectorAll('input[type="checkbox"], [role="checkbox"]')];
+                            const matching = [];
+                              for (const checkbox of checkboxes) {
+                                const candidates = [checkbox.getAttribute('aria-label') || ''];
+                                for (const label of checkbox.labels || []) candidates.push(label.innerText);
+                                let parent = checkbox.parentElement;
+                                while (parent && parent !== dialog &&
+                                             parent.querySelectorAll('input[type="checkbox"], [role="checkbox"]').length === 1) {
+                                    candidates.push(parent.innerText);
+                                    for (const leaf of parent.querySelectorAll('*')) {
+                                        if (!leaf.children.length) candidates.push(leaf.innerText || '');
+                                    }
+                                    parent = parent.parentElement;
+                                }
+                                const matched = candidates.some(text => text.split(/\\n/).some(
+                                    line => names.includes(line.trim().toLowerCase())
+                                ));
+                                if (matched) matching.push(checkbox);
+                            }
+                            return matching.length ? matching : false;
+                        }""",
+                        arg={"dialog": handle, "names": [repository.lower(), f"{org}/{repository}".lower()]},
+                        timeout=10000,
+                )
+        except PlaywrightTimeoutError as error:
+                raise RuntimeError(
+                        f"Could not match a repository checkbox for {org}/{repository} within 10 seconds."
+                ) from error
+        finally:
+                handle.dispose()
+        try:
+            if result.evaluate("matches => matches.length") != 1:
+                raise RuntimeError(f"Could not uniquely identify the checkbox for {org}/{repository}.")
+            return result.get_property("0").as_element()
+        finally:
+            result.dispose()
+
+
 def _ensure_actions_repository_access(
     page, org: str, package_name: str, repository: str, dry_run: bool
 ) -> None:
@@ -436,29 +482,13 @@ def _ensure_actions_repository_access(
         raise RuntimeError("Could not find the repository search field.") from error
     search_fields.first.fill(repository)
 
-    repository_label = dialog.get_by_text(
-        re.compile(rf"^(?:{re.escape(org)}[/])?{re.escape(repository)}$", re.IGNORECASE)
-    )
-    try:
-        repository_label.first.wait_for(state="visible", timeout=10000)
-    except PlaywrightTimeoutError as error:
-        raise RuntimeError(f"GitHub did not offer repository {org}/{repository} within 10 seconds.") from error
-    checkbox = dialog.get_by_role(
-        "checkbox", name=re.compile(
-            rf"^(?:{re.escape(org)}[/])?{re.escape(repository)}$", re.IGNORECASE
-        )
-    )
-    if not checkbox.count():
-        checkbox = repository_label.first.locator(
-            "xpath=ancestor::*[self::label or self::li or self::div]"
-            "[.//input[@type='checkbox']][1]"
-        ).locator('input[type="checkbox"]')
-    if checkbox.count() != 1:
-        raise RuntimeError(f"Could not uniquely identify the checkbox for {org}/{repository}.")
+    checkbox = _repository_checkbox(dialog, org, repository)
     try:
         checkbox.check(timeout=10000)
     except PlaywrightError as error:
         raise RuntimeError(f"Could not select the checkbox for {org}/{repository}.") from error
+    finally:
+        checkbox.dispose()
 
     submit = dialog.get_by_role(
         "button", name=re.compile(r"^add repositor(?:y|ies)$", re.IGNORECASE)

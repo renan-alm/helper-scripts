@@ -13,6 +13,7 @@ from packages_inheritance import (
     _ensure_actions_repository_access,
     _has_admin_role,
     _prepare_browser_session,
+    _repository_checkbox,
     _select_admin_role,
     extract_associated_repository,
     extract_package_repository,
@@ -188,6 +189,20 @@ class ActionsPanelBrowserTests(unittest.TestCase):
         cls.browser.close()
         cls.playwright.stop()
 
+    def test_ambiguous_repository_checkboxes_are_not_selected(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <div role="dialog">
+                <label><input type="checkbox">api</label>
+                <label><input type="checkbox">api</label></div>
+            """)
+            with self.assertRaisesRegex(RuntimeError, "uniquely identify"):
+                _repository_checkbox(page.get_by_role("dialog"), "acme", "api")
+            self.assertEqual(page.locator('input:checked').count(), 0)
+        finally:
+            page.close()
+
     def test_apply_selects_exact_checkbox_in_delayed_dialog(self):
         page = self.browser.new_page()
         try:
@@ -221,6 +236,28 @@ class ActionsPanelBrowserTests(unittest.TestCase):
             self.assertTrue(page.locator("#exact").is_checked())
             self.assertFalse(page.locator("#similar").is_checked())
             self.assertEqual(page.locator("#access select").input_value(), "Admin")
+        finally:
+            page.close()
+
+    def test_selects_checkbox_when_row_has_extra_hidden_text(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <section><h2>Manage Actions access</h2>
+                <button onclick="document.querySelector('[role=dialog]').hidden=false">Add Repository</button>
+                <table id="access"></table></section>
+                <div role="dialog" hidden><input type="search">
+                <div><input id="target" type="checkbox"><span hidden>Private repository</span><strong>gcp-app-symsearch</strong></div>
+                <div><input id="other" type="checkbox"><strong>gcp-app-symsearch-api</strong></div>
+                <button onclick="document.querySelector('#access').innerHTML =
+                  '<tr><td><a href=/SymriseAG/gcp-app-symsearch>gcp-app-symsearch</a></td><td><select><option>Read</option><option>Admin</option></select></td></tr>'">Add repositories</button></div>
+            """)
+            with patch.object(page, "goto"), patch.object(page, "reload"), patch(
+                "packages_inheritance._wait_for_sign_in"
+            ), redirect_stdout(StringIO()):
+                _ensure_actions_repository_access(page, "SymriseAG", "image", "gcp-app-symsearch", False)
+            self.assertTrue(page.locator("#target").is_checked())
+            self.assertFalse(page.locator("#other").is_checked())
         finally:
             page.close()
 
