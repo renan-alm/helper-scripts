@@ -189,6 +189,55 @@ class ActionsPanelBrowserTests(unittest.TestCase):
         cls.browser.close()
         cls.playwright.stop()
 
+    def test_visible_admin_in_actions_access_skips_all_changes(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <section><h2>Manage Actions access</h2>
+                <button onclick="this.textContent='clicked'">Add Repository</button>
+                <div><a href="/acme/other">other</a><button>Role: <span>Admin</span></button></div>
+                <div><a href="/acme/api">api</a><button onclick="this.textContent='clicked'">Role: Read</button></div>
+                </section><h2>Other settings</h2>
+            """)
+            output = StringIO()
+            with patch.object(page, "goto"), patch("packages_inheritance._wait_for_sign_in"), redirect_stdout(output):
+                _ensure_actions_repository_access(page, "acme", "image", "api", False)
+            self.assertIn("Admin is already visible in Manage Actions access", output.getvalue())
+            self.assertTrue(page.get_by_role("button", name="Role: Read").is_visible())
+            self.assertTrue(page.get_by_role("button", name="Add Repository").is_visible())
+        finally:
+            page.close()
+
+    def test_hidden_and_other_section_admin_do_not_skip_read_role(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <section><h2>Manage Actions access</h2><button>Add Repository</button>
+                <div><a href="/acme/api">api</a><button>Role: Read</button>
+                <div hidden><span>Admin</span></div></div></section>
+                <h2>Manage Codespaces access</h2><span>Admin</span>
+            """)
+            output = StringIO()
+            with patch.object(page, "goto"), patch("packages_inheritance._wait_for_sign_in"), redirect_stdout(output):
+                _ensure_actions_repository_access(page, "acme", "image", "api", True)
+            self.assertIn("Would change acme/api Actions access to Admin", output.getvalue())
+        finally:
+            page.close()
+
+    def test_selected_admin_option_is_detected(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content("""
+                <section><h2>Manage Actions access</h2><button>Add Repository</button>
+                <select><option>Read</option><option selected>Admin</option></select></section>
+            """)
+            output = StringIO()
+            with patch.object(page, "goto"), patch("packages_inheritance._wait_for_sign_in"), redirect_stdout(output):
+                _ensure_actions_repository_access(page, "acme", "image", "api", True)
+            self.assertIn("Admin is already visible in Manage Actions access", output.getvalue())
+        finally:
+            page.close()
+
     def test_existing_read_role_is_changed_to_admin(self):
         page = self.browser.new_page()
         try:
@@ -235,7 +284,7 @@ class ActionsPanelBrowserTests(unittest.TestCase):
             output = StringIO()
             with patch.object(page, "goto"), patch("packages_inheritance._wait_for_sign_in"), redirect_stdout(output):
                 _ensure_actions_repository_access(page, "acme", "image", "api", False)
-            self.assertIn("acme/api already has Admin Actions access", output.getvalue())
+            self.assertIn("Admin is already visible in Manage Actions access", output.getvalue())
             self.assertTrue(page.get_by_role("button", name="Role: Admin").is_visible())
         finally:
             page.close()
@@ -421,7 +470,7 @@ class ActionsPanelBrowserTests(unittest.TestCase):
                 "packages_inheritance._wait_for_sign_in"
             ), redirect_stdout(output):
                 _ensure_actions_repository_access(page, "acme", "image", "source", False)
-            self.assertIn("Actions access is already configured for acme/other-repo", output.getvalue())
+            self.assertIn("Admin is already visible in Manage Actions access", output.getvalue())
             self.assertNotIn("acme/source", output.getvalue())
             self.assertNotIn("acme/unrelated", output.getvalue())
             self.assertIsNone(page.get_by_role("button", name="Add Repository").get_attribute("data-clicked"))
@@ -629,6 +678,8 @@ class PackageActionTests(unittest.TestCase):
         with patch("packages_inheritance._wait_for_sign_in"), patch(
             "packages_inheritance._actions_access_panel", return_value=panel
         ), patch(
+            "packages_inheritance._actions_access_has_admin", return_value=False
+        ), patch(
             "packages_inheritance._actions_access_repositories", return_value=[]
         ), redirect_stdout(output):
             _ensure_actions_repository_access(page, "acme", "frontend", "api", True)
@@ -644,6 +695,8 @@ class PackageActionTests(unittest.TestCase):
 
         with patch("packages_inheritance._wait_for_sign_in"), patch(
             "packages_inheritance._actions_access_panel"
+        ), patch(
+            "packages_inheritance._actions_access_has_admin", return_value=False
         ), patch(
             "packages_inheritance._actions_access_repositories", return_value=["other"]
         ), redirect_stdout(output):

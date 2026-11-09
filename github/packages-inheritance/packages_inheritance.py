@@ -328,6 +328,30 @@ def _actions_access_repositories(page, org: str) -> list[str]:
     return repositories
 
 
+def _actions_access_has_admin(page) -> bool:
+        """Check visible Actions-section text and selected roles for Admin."""
+        heading = page.get_by_role(
+                "heading", name=re.compile(r"manage actions access", re.IGNORECASE)
+        )
+        elements = heading.locator(
+                "xpath=following::*[preceding::*[self::h1 or self::h2 or self::h3 "
+                "or self::h4 or self::h5 or self::h6][1][contains("
+                "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+                "'abcdefghijklmnopqrstuvwxyz'), 'manage actions access')]]"
+                "[self::select or (not(*) and not(self::option))]"
+        )
+        return elements.evaluate_all(
+                """elements => elements.some(element => {
+                    const style = getComputedStyle(element);
+                    if (!element.getClientRects().length || style.visibility !== 'visible') return false;
+                    const text = element.tagName === 'SELECT'
+                        ? element.selectedOptions[0]?.textContent || ''
+                        : element.innerText || '';
+                    return /\\badmin\\b/i.test(text);
+                })"""
+        )
+
+
 def should_add_actions_access(repository: str, existing_repositories: Sequence[str]) -> bool:
     """Return whether the linked repository is absent from Actions access."""
     return repository.casefold() not in {
@@ -448,6 +472,9 @@ def _ensure_actions_repository_access(
     _wait_for_sign_in(page, settings_url)
 
     panel = _actions_access_panel(page)
+    if _actions_access_has_admin(page):
+        print(f"Unchanged {settings_url}: Admin is already visible in Manage Actions access.")
+        return
     existing_repositories = _actions_access_repositories(page, org)
     if not should_add_actions_access(repository, existing_repositories):
         from playwright.sync_api import Error as PlaywrightError
