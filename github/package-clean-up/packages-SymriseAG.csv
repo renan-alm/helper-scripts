@@ -1,0 +1,11 @@
+delete,package_type,name,visibility,repository,version_count,created_at,updated_at,html_url
+yes,container,knime-5.2.3-477-with-python-rdkit,private,SymriseAG/knime-basic-container-image,,2024-05-14T11:28:34Z,2024-10-28T12:46:54Z,https://github.com/orgs/SymriseAG/packages/container/package/knime-5.2.3-477-with-python-rdkit
+yes,container,knime-nodes-basic,private,SymriseAG/knime-image-stack,,2024-09-17T13:19:52Z,2026-05-08T11:10:50Z,https://github.com/orgs/SymriseAG/packages/container/package/knime-nodes-basic
+yes,container,knime-python-basic,private,SymriseAG/knime-image-stack,,2024-09-24T07:39:45Z,2026-05-08T16:13:54Z,https://github.com/orgs/SymriseAG/packages/container/package/knime-python-basic
+yes,container,knime-r-basic,private,SymriseAG/knime-image-stack,,2024-09-24T08:13:38Z,2026-05-08T16:49:46Z,https://github.com/orgs/SymriseAG/packages/container/package/knime-r-basic
+yes,container,knime-python-chemistry,private,SymriseAG/knime-image-stack,,2025-01-23T19:25:48Z,2026-05-08T16:52:19Z,https://github.com/orgs/SymriseAG/packages/container/package/knime-python-chemistry
+no,container,knime-nodes-basic-hub,private,SymriseAG/knime-image-stack,,2026-05-08T12:42:02Z,2026-09-29T08:43:49Z,https://github.com/orgs/SymriseAG/packages/container/package/knime-nodes-basic-hub
+no,container,knime-nodes-chemistry-hub,private,SymriseAG/knime-image-stack,,2026-05-08T13:02:56Z,2026-09-29T09:14:04Z,https://github.com/orgs/SymriseAG/packages/container/package/knime-nodes-chemistry-hub
+no,container,knime-python-basic-hub,private,SymriseAG/knime-image-stack,,2026-05-08T13:06:02Z,2026-09-29T09:19:20Z,https://github.com/orgs/SymriseAG/packages/container/package/knime-python-basic-hub
+no,container,knime-r-basic-hub,private,SymriseAG/knime-image-stack,,2026-05-08T13:39:39Z,2026-09-29T09:39:38Z,https://github.com/orgs/SymriseAG/packages/container/package/knime-r-basic-hub
+no,container,knime-python-chemistry-hub,private,SymriseAG/knime-image-stack,,2026-05-08T19:44:53Z,2026-09-29T09:56:51Z,https://github.com/orgs/SymriseAG/packages/container/package/knime-python-chemistry-hub
